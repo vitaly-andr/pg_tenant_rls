@@ -13,7 +13,7 @@ module PgTenantRls
     def add_tenant_column!(table, column: PgTenantRls.config.discriminator,
                            type: PgTenantRls.config.key_type, null: false, default_from_guc: true)
       default = default_from_guc ? "DEFAULT #{PgTenantRls.tenant_id_sql}" : ""
-      not_null = null ? "NOT NULL" : ""
+      not_null = null ? "" : "NOT NULL"
       execute(
         "ALTER TABLE #{quote_table_name(table)} " \
         "ADD COLUMN IF NOT EXISTS #{quote_column_name(column)} #{type} #{default} #{not_null};".squeeze(" ")
