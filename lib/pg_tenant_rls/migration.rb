@@ -8,14 +8,15 @@ module PgTenantRls
   module Migration
     # Add the discriminator column, stamped from the GUC via a DB DEFAULT, so that even
     # raw or out-of-process (e.g. Go) INSERTs that set the GUC get the right tenant id.
-    # null: false by default — runtime writes always carry a tenant context.
+    # null: false by default — runtime writes always carry a tenant context. Idempotent
+    # (ADD COLUMN IF NOT EXISTS), so it is safe under a reconcile/re-run.
     def add_tenant_column!(table, column: PgTenantRls.config.discriminator,
                            type: PgTenantRls.config.key_type, null: false, default_from_guc: true)
       default = default_from_guc ? "DEFAULT #{PgTenantRls.tenant_id_sql}" : ""
       not_null = null ? "NOT NULL" : ""
       execute(
         "ALTER TABLE #{quote_table_name(table)} " \
-        "ADD COLUMN #{quote_column_name(column)} #{type} #{default} #{not_null};".squeeze(" ")
+        "ADD COLUMN IF NOT EXISTS #{quote_column_name(column)} #{type} #{default} #{not_null};".squeeze(" ")
       )
     end
 

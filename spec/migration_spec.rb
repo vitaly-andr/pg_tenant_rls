@@ -96,4 +96,12 @@ RSpec.describe PgTenantRls::Migration do
       expect(sql).to include(%(WITH CHECK ("tenant_id" = #{guc_cast})))
     end
   end
+
+  describe "#add_tenant_column!" do
+    before { harness.add_tenant_column!(:widgets) }
+
+    it "is idempotent (ADD COLUMN IF NOT EXISTS) with a DB DEFAULT from the GUC" do
+      expect(sql).to include(%(ADD COLUMN IF NOT EXISTS "tenant_id" bigint DEFAULT #{guc_cast} NOT NULL))
+    end
+  end
 end
