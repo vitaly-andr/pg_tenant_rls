@@ -47,15 +47,32 @@ module PgTenantRls
                                                      predicate: { using: pred, check: pred })
     end
 
-    # Public-read / owner-write archetype (a shared catalog: everyone reads, owner writes).
-    def create_public_read_owner_write_policy!(table, owner_column: :owner_tenant_id,
-                                               role: PgTenantRls.config.runtime_role)
-      pred = "#{quote_column_name(owner_column)} = #{PgTenantRls.tenant_id_sql}"
-      recreate_policy!(table, "#{table}_public_select", command: "SELECT", role: role, predicate: { using: "true" })
-      recreate_policy!(table, "#{table}_owner_insert", command: "INSERT", role: role, predicate: { check: pred })
-      recreate_policy!(table, "#{table}_owner_update", command: "UPDATE", role: role,
-                                                       predicate: { using: pred, check: pred })
-      recreate_policy!(table, "#{table}_owner_delete", command: "DELETE", role: role, predicate: { using: pred })
+    # Shared-default archetype: each tenant sees its own rows plus global defaults
+    # (discriminator IS NULL) and writes only its own. Global defaults are seeded by an
+    # admin/owner role (host concern).
+    def create_shared_default_policy!(table, column: PgTenantRls.config.discriminator,
+                                      role: PgTenantRls.config.runtime_role)
+      own = "#{quote_column_name(column)} = #{PgTenantRls.tenant_id_sql}"
+      read = "(#{own} OR #{quote_column_name(column)} IS NULL)"
+      recreate_policy!(table, "#{table}_shared_select", command: "SELECT", role: role, predicate: { using: read })
+      recreate_policy!(table, "#{table}_shared_insert", command: "INSERT", role: role, predicate: { check: own })
+      recreate_policy!(table, "#{table}_shared_update", command: "UPDATE", role: role,
+                                                        predicate: { using: own, check: own })
+      recreate_policy!(table, "#{table}_shared_delete", command: "DELETE", role: role, predicate: { using: own })
+    end
+
+    # Public-read archetype: anyone reads PUBLISHED rows (gated on a domain boolean column)
+    # plus its own; writes only its own. The row's owner is its tenant (discriminator).
+    def create_public_read_policy!(table, published_column: :published,
+                                   column: PgTenantRls.config.discriminator,
+                                   role: PgTenantRls.config.runtime_role)
+      own = "#{quote_column_name(column)} = #{PgTenantRls.tenant_id_sql}"
+      read = "(#{quote_column_name(published_column)} OR #{own})"
+      recreate_policy!(table, "#{table}_public_select", command: "SELECT", role: role, predicate: { using: read })
+      recreate_policy!(table, "#{table}_public_insert", command: "INSERT", role: role, predicate: { check: own })
+      recreate_policy!(table, "#{table}_public_update", command: "UPDATE", role: role,
+                                                        predicate: { using: own, check: own })
+      recreate_policy!(table, "#{table}_public_delete", command: "DELETE", role: role, predicate: { using: own })
     end
 
     def grant_runtime_privileges!(table, sequence: "#{table}_id_seq", role: PgTenantRls.config.runtime_role)

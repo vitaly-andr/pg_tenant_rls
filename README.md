@@ -48,10 +48,14 @@ class AddTenancyToWidgets < ActiveRecord::Migration[7.1]
 end
 ```
 
-A shared catalog (everyone reads, owner writes):
+Other access archetypes:
 
 ```ruby
-create_public_read_owner_write_policy! :products, owner_column: :owner_tenant_id
+# Own rows + global defaults (tenant_id IS NULL); writes own only:
+create_shared_default_policy! :price_types
+
+# Published rows are world-readable (gated on a domain boolean column) + own; writes own only:
+create_public_read_policy! :products, published_column: :published
 ```
 
 ## Setting the tenant at runtime
