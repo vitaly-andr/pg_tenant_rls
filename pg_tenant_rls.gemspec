@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description = "Host-agnostic PostgreSQL RLS tenancy for ActiveRecord: a transaction-scoped " \
                      "SET LOCAL context wrapper, a migration DSL for tenant and owner policies with " \
                      "FORCE RLS, and runtime-role provisioning. Parameterized by a configurable GUC."
-  spec.homepage = "https://github.com/vitaly-andr/pg-tenant-rls"
+  spec.homepage = "https://github.com/vitaly-andr/pg_tenant_rls"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
 
