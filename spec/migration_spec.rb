@@ -97,6 +97,22 @@ RSpec.describe PgTenantRls::Migration do
     end
   end
 
+  describe "#create_public_catalog_policy!" do
+    before { harness.create_public_catalog_policy!(:products) }
+
+    it "reads every row when there is no tenant context, else only own" do
+      expect(sql).to include(%(products_catalog_select))
+      expect(sql).to include(%((#{guc_cast} IS NULL OR "tenant_id" = #{guc_cast})))
+    end
+
+    it "writes own rows only (INSERT/UPDATE/DELETE keyed to current tenant)" do
+      expect(sql).to include(%(products_catalog_insert ON "products" FOR INSERT))
+      expect(sql).to include(%(products_catalog_update ON "products" FOR UPDATE))
+      expect(sql).to include(%(products_catalog_delete ON "products" FOR DELETE))
+      expect(sql).to include(%(WITH CHECK ("tenant_id" = #{guc_cast})))
+    end
+  end
+
   describe "#add_tenant_column!" do
     before { harness.add_tenant_column!(:widgets) }
 

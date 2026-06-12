@@ -76,6 +76,24 @@ module PgTenantRls
       recreate_policy!(table, "#{table}_public_delete", command: "DELETE", role: role, predicate: { using: own })
     end
 
+    # Public-catalog archetype: context-keyed reads, owner-only writes. With NO tenant
+    # context set (the public storefront/marketplace) every row is visible; with a
+    # tenant context set (a vendor admin or per-vendor subdomain) only the tenant's own
+    # rows are visible — DB-enforced read isolation for the admin while the storefront
+    # stays public. Writes are always owner-only (discriminator = current tenant), so a
+    # vendor can never mutate another vendor's catalog. Unlike public_read there is no
+    # published-flag gate.
+    def create_public_catalog_policy!(table, column: PgTenantRls.config.discriminator,
+                                      role: PgTenantRls.config.runtime_role)
+      own = "#{quote_column_name(column)} = #{PgTenantRls.tenant_id_sql}"
+      read = "(#{PgTenantRls.tenant_id_sql} IS NULL OR #{own})"
+      recreate_policy!(table, "#{table}_catalog_select", command: "SELECT", role: role, predicate: { using: read })
+      recreate_policy!(table, "#{table}_catalog_insert", command: "INSERT", role: role, predicate: { check: own })
+      recreate_policy!(table, "#{table}_catalog_update", command: "UPDATE", role: role,
+                                                         predicate: { using: own, check: own })
+      recreate_policy!(table, "#{table}_catalog_delete", command: "DELETE", role: role, predicate: { using: own })
+    end
+
     def grant_runtime_privileges!(table, sequence: "#{table}_id_seq", role: PgTenantRls.config.runtime_role)
       raise PgTenantRls::Error, "config.runtime_role is not set" unless role
 
