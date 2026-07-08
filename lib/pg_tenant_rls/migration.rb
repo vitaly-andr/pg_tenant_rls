@@ -94,6 +94,27 @@ module PgTenantRls
       recreate_policy!(table, "#{table}_catalog_delete", command: "DELETE", role: role, predicate: { using: own })
     end
 
+    # Gated-catalog archetype: a row is visible iff a companion "gate" table (a separate
+    # register keyed by a foreign key back to this table) has a matching row whose
+    # `published_column` is true — OR the row belongs to the current tenant (so an owner
+    # can see/manage their own not-yet-published rows). Writes stay owner-only, same shape
+    # as public_read/public_catalog. Lets a synced catalog table (no `published` column of
+    # its own — a re-sync would clobber one) gate visibility through an off-catalog register
+    # instead (e.g. kub_products ← kub_publications).
+    #
+    #   create_gated_read_policy!(:kub_products, gate: { table: "kub_publications", fk: "kub_product_id" })
+    def create_gated_read_policy!(table, gate:, published_column: :published,
+                                  column: PgTenantRls.config.discriminator,
+                                  role: PgTenantRls.config.runtime_role)
+      own = "#{quote_column_name(column)} = #{PgTenantRls.tenant_id_sql}"
+      read = "(#{gated_predicate(table, gate, published_column)} OR #{own})"
+      recreate_policy!(table, "#{table}_gated_select", command: "SELECT", role: role, predicate: { using: read })
+      recreate_policy!(table, "#{table}_gated_insert", command: "INSERT", role: role, predicate: { check: own })
+      recreate_policy!(table, "#{table}_gated_update", command: "UPDATE", role: role,
+                                                       predicate: { using: own, check: own })
+      recreate_policy!(table, "#{table}_gated_delete", command: "DELETE", role: role, predicate: { using: own })
+    end
+
     def grant_runtime_privileges!(table, sequence: "#{table}_id_seq", role: PgTenantRls.config.runtime_role)
       raise PgTenantRls::Error, "config.runtime_role is not set" unless role
 
@@ -102,6 +123,13 @@ module PgTenantRls
     end
 
     private
+
+    # EXISTS subquery against the gate table for create_gated_read_policy!.
+    def gated_predicate(table, gate, published_column)
+      "EXISTS (SELECT 1 FROM #{quote_table_name(gate.fetch(:table))} g " \
+        "WHERE g.#{quote_column_name(gate.fetch(:fk))} = #{quote_table_name(table)}.id " \
+        "AND g.#{quote_column_name(published_column)})"
+    end
 
     # Deterministic policy name + idempotent DROP IF EXISTS -> CREATE.
     # predicate: { using: <sql>, check: <sql> } (either or both optional).
