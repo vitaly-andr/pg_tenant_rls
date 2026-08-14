@@ -25,9 +25,29 @@ PgTenantRls.configure do |c|
   c.guc           = "app.current_tenant_id" # GUC your app sets per request/job
   c.discriminator = :tenant_id              # discriminator column on tenant-scoped tables
   c.key_type      = :bigint                 # SQL type of the tenant key
-  c.runtime_role  = "app_runtime"           # NOSUPERUSER/NOBYPASSRLS role used at runtime
+  c.runtime_role  = "app_runtime"           # NOSUPERUSER/NOBYPASSRLS role, target of GRANTs
 end
 ```
+
+Configure from the **host**, once. The configuration is process-global on purpose: the tenant
+context belongs to the database session, not to a Ruby object, so a per-consumer configuration
+would not make the database multi-contour — each consumer would merely believe it had its own
+while writing to the same session. Engines mounted in a host inherit its GUC, discriminator and
+key type; they should not call `configure` themselves.
+
+Two settings name roles, and they are not the same one:
+
+- `runtime_role` — who receives `GRANT`s. Required by `RoleProvisioner`.
+- `policy_role` — the `TO` clause on policies. Defaults to `nil`, and usually should stay there:
+  a policy without `TO` applies to `PUBLIC`, while `TO <role>` adds nothing to isolation and
+  costs portability (a schema load fails where the role is absent) and safety of failure (a role
+  not listed sees zero rows).
+
+**The GUC name becomes part of your schema.** It is written literally into every column `DEFAULT`
+and every policy predicate, because PostgreSQL offers no indirection for a GUC name inside an
+expression. Changing it later means rewriting both — and note that a `DEFAULT` is baked at
+migration time, so tables created by an ordinary migration will not pick up a new GUC on their
+own.
 
 ## Migrations
 
@@ -56,7 +76,53 @@ create_shared_default_policy! :price_types
 
 # Published rows are world-readable (gated on a domain boolean column) + own; writes own only:
 create_public_read_policy! :products, published_column: :published
+
+# Same, but the publish flag lives in a separate register rather than on the table:
+create_gated_read_policy! :products, gate: { table: :publications, fk: :product_id }
+
+# No tenant context → every row (a public storefront); with one → own rows only:
+create_public_catalog_policy! :products
 ```
+
+Mind how each one fails when the tenant context is missing. `tenant`, `shared_default`,
+`public_read` and `gated_read` return zero rows — a loud failure. `public_catalog` returns
+**everything**, by design, because a storefront has to work without a tenant. That difference is
+why "the table has a policy" is not a check worth making.
+
+## Foreign keys
+
+Referential integrity checks bypass row security ([PostgreSQL,
+"Row Security Policies"](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)). A plain
+`FOREIGN KEY (order_id) REFERENCES orders (id)` therefore accepts another tenant's row: invisible,
+but present — and the difference between a violation and a success is an existence oracle over
+every id in the table. Key the reference on the discriminator too:
+
+```ruby
+add_tenant_foreign_key! :line_items, :orders, column: :order_id
+# → UNIQUE (tenant_id, id) on orders, then
+#   FOREIGN KEY (tenant_id, order_id) REFERENCES orders (tenant_id, id)
+```
+
+For the `tenant` archetype only: `shared_default` parents carry NULL discriminators, and the
+public/gated archetypes reference other tenants on purpose.
+
+## Checking what the database actually holds
+
+```ruby
+PgTenantRls::Inspector.call(connection, prefixes: [Crm.table_name_prefix])
+PgTenantRls::Inspector.verify!(connection, manifest: { crm_deals: :tenant, crm_products: :public_catalog })
+```
+
+`call` reports RLS and FORCE flags, every policy with its command, permissiveness, roles and
+expressions, the discriminator column, and foreign keys that omit the discriminator. `verify!`
+checks that against a manifest you declare and raises on any mismatch.
+
+Declare the perimeter — the gem will not guess it. It cannot recognize its own tables: a host
+writing the same predicate by hand produces a byte-identical `DEFAULT`, and a policy name is a
+hint rather than metadata, since the name survives while its predicate changes. When you pass
+`prefixes:`, take them from `Module.table_name_prefix` rather than a literal — `isolate_namespace`
+rewrites an engine's prefix to include the host's own once ActiveRecord loads, so a hardcoded
+`"crm_"` can silently match nothing.
 
 ## Setting the tenant at runtime
 
@@ -83,6 +149,7 @@ PgTenantRls::RoleProvisioner.grant!(connection)        # after schema load
 Run provisioning as an owner/superuser. **RLS is only enforced under a `NOBYPASSRLS`
 role** — a superuser (or a table owner without `FORCE`) bypasses every policy, so
 isolation tests must connect as the runtime role or they will pass for the wrong reason.
+`PgTenantRls::Inspector.enforced_for_current_role?(connection)` answers that directly.
 
 ## Development
 

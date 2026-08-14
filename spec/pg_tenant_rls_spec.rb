@@ -26,6 +26,12 @@ RSpec.describe PgTenantRls do
       expect(described_class.config.guc).to eq("app.current_tenant_id")
       expect(described_class.config.discriminator).to eq(:tenant_id)
     end
+
+    it "leaves policy_role nil, so policies stay role-agnostic even with runtime_role set" do
+      described_class.configure { |c| c.runtime_role = "app_runtime" }
+
+      expect(described_class.config.policy_role).to be_nil
+    end
   end
 
   describe ".tenant_id_sql" do

@@ -15,16 +15,27 @@ module PgTenantRls
     # SQL type of the tenant key (bigint for integer PKs; change for uuid hosts).
     attr_accessor :key_type
 
-    # Unprivileged (NOSUPERUSER/NOBYPASSRLS) runtime role: target of GRANTs and of the
-    # policy TO clause. Required for role provisioning; optional for the policies
-    # themselves (a policy without TO applies to every non-BYPASS role).
+    # Unprivileged (NOSUPERUSER/NOBYPASSRLS) runtime role. Target of GRANTs ONLY —
+    # required by RoleProvisioner and grant_runtime_privileges!. It deliberately does
+    # NOT reach the policy TO clause; see #policy_role.
     attr_accessor :runtime_role
+
+    # Role bound into the policy TO clause. nil (the default) means the policies apply
+    # to PUBLIC, i.e. to every non-BYPASSRLS role.
+    #
+    # Keep it nil unless you know you want otherwise. TO <role> adds nothing to
+    # isolation (the predicate is unchanged) and costs two things: a policy that does
+    # not list the connecting role simply does not apply, so with no other policy the
+    # table default-denies and returns zero rows; and the dumped schema stops being
+    # portable, since CREATE POLICY ... TO <role> fails to load where the role is absent.
+    attr_accessor :policy_role
 
     def initialize
       @guc = "app.current_tenant_id"
       @discriminator = :tenant_id
       @key_type = :bigint
       @runtime_role = nil
+      @policy_role = nil
     end
   end
 end

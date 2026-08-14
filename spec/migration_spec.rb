@@ -7,11 +7,15 @@ RSpec.describe PgTenantRls::Migration do
     Class.new do
       include PgTenantRls::Migration
 
-      attr_reader :executed
+      attr_reader :executed, :queries
+      # Catalog answers. Both nil by default: no policy exists (so recreate_policy!
+      # takes the CREATE branch) and the column owns no sequence.
+      attr_accessor :existing_command, :sequence_name
 
       def initialize
         super
         @executed = []
+        @queries = []
       end
 
       def execute(sql)
@@ -30,8 +34,16 @@ RSpec.describe PgTenantRls::Migration do
         "'#{value}'"
       end
 
-      def select_values(_sql)
+      def select_values(sql)
+        @queries << sql
         []
+      end
+
+      def select_value(sql)
+        return @existing_command if sql.include?("polcmd")
+        return @sequence_name if sql.include?("pg_get_serial_sequence")
+
+        nil
       end
     end.new
   end
@@ -53,8 +65,9 @@ RSpec.describe PgTenantRls::Migration do
   describe "#create_tenant_policy! (isolated)" do
     before { harness.create_tenant_policy!(:widgets) }
 
-    it "creates an ALL policy scoped to the configured role" do
-      expect(sql).to include(%(CREATE POLICY widgets_tenant_all ON "widgets" FOR ALL TO app_runtime))
+    it "creates an ALL policy with NO TO clause, even though runtime_role is set" do
+      expect(sql).to include(%(CREATE POLICY widgets_tenant_all ON "widgets" FOR ALL USING))
+      expect(sql).not_to include("TO app_runtime")
     end
 
     it "isolates by discriminator = current tenant for both USING and WITH CHECK" do
@@ -113,11 +126,120 @@ RSpec.describe PgTenantRls::Migration do
     end
   end
 
+  describe "#create_gated_read_policy!" do
+    before { harness.create_gated_read_policy!(:products, gate: { table: :publications, fk: :product_id }) }
+
+    it "reads rows the gate marks published OR own rows" do
+      expect(sql).to include(%(products_gated_select))
+      expect(sql).to include(%|EXISTS (SELECT 1 FROM "publications" g WHERE g."product_id" = "products"."id"|)
+      expect(sql).to include(%|AND g."published") OR "tenant_id" = #{guc_cast})|)
+    end
+
+    it "writes own rows only" do
+      expect(sql).to include(%(products_gated_insert ON "products" FOR INSERT))
+      expect(sql).to include(%(WITH CHECK ("tenant_id" = #{guc_cast})))
+    end
+  end
+
   describe "#add_tenant_column!" do
     before { harness.add_tenant_column!(:widgets) }
 
     it "is idempotent (ADD COLUMN IF NOT EXISTS) with a DB DEFAULT from the GUC" do
       expect(sql).to include(%(ADD COLUMN IF NOT EXISTS "tenant_id" bigint DEFAULT #{guc_cast} NOT NULL))
+    end
+  end
+
+  describe "policy_role — the TO clause, separate from runtime_role" do
+    it "writes TO only when policy_role is set" do
+      PgTenantRls.config.policy_role = "app_runtime"
+      harness.create_tenant_policy!(:widgets)
+      expect(sql).to include(%(FOR ALL TO app_runtime))
+    end
+
+    it "still takes an explicit role: argument" do
+      harness.create_tenant_policy!(:widgets, role: "reporting")
+      expect(sql).to include(%(FOR ALL TO reporting))
+    end
+  end
+
+  describe "policy rewrite — ALTER over DROP + CREATE" do
+    it "alters in place when a policy of the same command already exists" do
+      harness.existing_command = "*"
+      harness.create_tenant_policy!(:widgets)
+      expect(sql).to include(%(ALTER POLICY widgets_tenant_all ON "widgets" TO PUBLIC))
+      expect(sql).not_to include("DROP POLICY")
+      expect(sql).not_to include("CREATE POLICY")
+    end
+
+    it "spells out TO PUBLIC so a stale role binding is cleared, not left behind" do
+      harness.existing_command = "*"
+      harness.create_tenant_policy!(:widgets)
+      expect(sql).to include("TO PUBLIC")
+    end
+
+    it "falls back to DROP + CREATE when the command differs" do
+      harness.existing_command = "r" # SELECT, but the archetype wants ALL
+      harness.create_tenant_policy!(:widgets)
+      expect(sql).to include("DROP POLICY IF EXISTS widgets_tenant_all")
+      expect(sql).to include("CREATE POLICY widgets_tenant_all")
+    end
+  end
+
+  describe "#drop_tenant_policies!" do
+    before { harness.drop_tenant_policies!(:widgets) }
+
+    it "identifies the table through to_regclass, not by bare name" do
+      expect(harness.queries.join).to include("FROM pg_policy WHERE polrelid = to_regclass('widgets')")
+    end
+
+    it "does not fall back to pg_policies, which omits the schema" do
+      expect(harness.queries.join).not_to include("pg_policies")
+    end
+  end
+
+  describe "#grant_runtime_privileges!" do
+    it "asks the catalog which sequence the column owns" do
+      harness.sequence_name = "public.widgets_id_seq"
+      harness.grant_runtime_privileges!(:widgets)
+      expect(sql).to include("GRANT USAGE, SELECT ON SEQUENCE public.widgets_id_seq TO app_runtime;")
+    end
+
+    it "skips the sequence grant when the column owns none" do
+      harness.grant_runtime_privileges!(:widgets)
+      expect(sql).to include("GRANT SELECT, INSERT, UPDATE, DELETE")
+      expect(sql).not_to include("ON SEQUENCE")
+    end
+
+    it "still honours an explicit sequence name" do
+      harness.grant_runtime_privileges!(:widgets, sequence: :widgets_seq)
+      expect(sql).to include(%(ON SEQUENCE "widgets_seq" TO app_runtime;))
+    end
+  end
+
+  describe "#create_override_policy!" do
+    before { harness.create_override_policy!(:widgets, predicate: "current_setting('app.admin') = 'on'") }
+
+    it "layers a permissive ALL policy carrying the host's predicate" do
+      expect(sql).to include(%(CREATE POLICY widgets_override_all ON "widgets" FOR ALL))
+      expect(sql).to include(%(USING (current_setting('app.admin') = 'on')))
+      expect(sql).to include(%(WITH CHECK (current_setting('app.admin') = 'on')))
+    end
+  end
+
+  describe "#add_tenant_foreign_key!" do
+    before { harness.add_tenant_foreign_key!(:line_items, :orders, column: :order_id) }
+
+    it "keys the reference on the discriminator so it cannot cross tenants" do
+      expect(sql).to include(%(FOREIGN KEY ("tenant_id", "order_id") REFERENCES "orders" ("tenant_id", "id")))
+    end
+
+    it "adds the composite UNIQUE the reference requires on the parent" do
+      expect(sql).to include(%(ADD CONSTRAINT uq_orders_tenant_id UNIQUE ("tenant_id", "id")))
+    end
+
+    it "is idempotent — every constraint is guarded by an existence check" do
+      expect(sql.scan("IF NOT EXISTS").length).to eq(2)
+      expect(sql).to include("conrelid = to_regclass('orders')")
     end
   end
 end
