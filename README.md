@@ -155,6 +155,17 @@ isolation tests must connect as the runtime role or they will pass for the wrong
 
 After checking out the repo, run `bin/setup` to install dependencies, then `rake spec`.
 
+The suite has two halves. Unit specs capture the SQL each helper would run and need nothing
+but Ruby. Isolation specs (`spec/isolation_spec.rb`, tagged `:database`) run against a real
+PostgreSQL **as an unprivileged role** — they create a `pg_tenant_rls_test` database and a
+`NOSUPERUSER`/`NOBYPASSRLS` role, then check that tenants genuinely cannot see or write each
+other's rows. Without that role the specs would pass with RLS switched off entirely, so the
+role is the test, not a detail of its setup.
+
+Point them at your database with `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` (defaults:
+`localhost:5433`, user `spree`). With no database reachable they skip with a reason rather
+than fail — a skipped isolation suite proves nothing, and should say so.
+
 ## License
 
 The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).

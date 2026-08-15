@@ -1,0 +1,137 @@
+# frozen_string_literal: true
+
+require "active_record"
+
+# Live-database harness for the isolation specs.
+#
+# Two connections, and the second one is the whole point. DDL runs as the owner, but
+# every isolation assertion runs as an unprivileged role: policies are inert under a
+# superuser or a BYPASSRLS role, so a suite connected as the owner would pass with RLS
+# switched off entirely.
+module TestDatabase
+  DATABASE = "pg_tenant_rls_test"
+  # No "pg_" prefix: PostgreSQL reserves that namespace for role names.
+  RUNTIME_ROLE = "tenant_rls_test_app"
+  RUNTIME_PASSWORD = "tenant_rls_test_app"
+
+  # Points at the local development PostgreSQL by default; override for CI.
+  HOST = ENV.fetch("PGHOST", "localhost")
+  PORT = ENV.fetch("PGPORT", "5433")
+  OWNER_USER = ENV.fetch("PGUSER", "spree")
+  OWNER_PASSWORD = ENV.fetch("PGPASSWORD", "spree")
+
+  # Connection class for the unprivileged role. A separate abstract class is what keeps
+  # the two connections apart — ActiveRecord pools per class, not per call.
+  class RuntimeBase < ActiveRecord::Base
+    self.abstract_class = true
+  end
+
+  module_function
+
+  def available?
+    return @available if defined?(@available)
+
+    @available = begin
+      setup!
+      true
+    rescue StandardError => e
+      @error = e
+      false
+    end
+  end
+
+  def error_message
+    "PostgreSQL unavailable at #{HOST}:#{PORT} (#{@error&.message}). " \
+      "Isolation specs need a live database; set PGHOST/PGPORT/PGUSER/PGPASSWORD to point elsewhere."
+  end
+
+  def setup!
+    create_database!
+    connect_owner!
+    create_runtime_role!
+    connect_runtime!
+  end
+
+  def create_database!
+    admin = PG.connect(host: HOST, port: PORT, user: OWNER_USER, password: OWNER_PASSWORD, dbname: "postgres")
+    exists = admin.exec_params("SELECT 1 FROM pg_database WHERE datname = $1", [DATABASE]).ntuples.positive?
+    admin.exec("CREATE DATABASE #{DATABASE}") unless exists
+    admin.close
+  end
+
+  def connect_owner!
+    ActiveRecord::Base.establish_connection(config(OWNER_USER, OWNER_PASSWORD))
+    ActiveRecord::Base.connection.execute("SELECT 1")
+  end
+
+  # NOSUPERUSER/NOBYPASSRLS is the requirement under test, not a detail: without it the
+  # policies below would never be consulted.
+  def create_runtime_role!
+    owner.execute(<<~SQL)
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '#{RUNTIME_ROLE}') THEN
+          CREATE ROLE #{RUNTIME_ROLE} LOGIN PASSWORD '#{RUNTIME_PASSWORD}'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+        END IF;
+      END $$;
+    SQL
+    owner.execute("GRANT USAGE, CREATE ON SCHEMA public TO #{RUNTIME_ROLE};")
+  end
+
+  def connect_runtime!
+    RuntimeBase.establish_connection(config(RUNTIME_ROLE, RUNTIME_PASSWORD))
+    RuntimeBase.connection.execute("SELECT 1")
+  end
+
+  def config(user, password)
+    { adapter: "postgresql", host: HOST, port: PORT.to_i, database: DATABASE,
+      username: user, password: password }
+  end
+
+  def owner
+    ActiveRecord::Base.connection
+  end
+
+  def runtime
+    RuntimeBase.connection
+  end
+
+  # Migration DSL bound to a connection, the same shape bsl_kub uses in production: the
+  # gem's helpers proxied onto a connection rather than onto ActiveRecord::Migration.
+  class Runner
+    include PgTenantRls::Migration
+
+    def initialize(connection)
+      @connection = connection
+    end
+
+    %i[execute quote_table_name quote_column_name quote select_value select_values].each do |name|
+      define_method(name) { |*args, **kwargs| @connection.public_send(name, *args, **kwargs) }
+    end
+  end
+
+  def runner
+    Runner.new(owner)
+  end
+
+  # Drop and recreate a table as the owner, granting the runtime role its DML rights.
+  def reset_table!(name, columns)
+    owner.execute("DROP TABLE IF EXISTS #{name} CASCADE;")
+    owner.execute("CREATE TABLE #{name} (id bigserial PRIMARY KEY, #{columns});")
+    owner.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON #{name} TO #{RUNTIME_ROLE};")
+    owner.execute("GRANT USAGE, SELECT ON SEQUENCE #{name}_id_seq TO #{RUNTIME_ROLE};")
+  end
+
+  # Run a block with the tenant GUC set on the RUNTIME connection, then clear it.
+  def as_tenant(tenant_id)
+    runtime.execute("SELECT set_config('#{PgTenantRls.config.guc}', '#{tenant_id}', false)")
+    yield
+  ensure
+    runtime.execute("SELECT set_config('#{PgTenantRls.config.guc}', '', false)")
+  end
+
+  def without_tenant
+    runtime.execute("SELECT set_config('#{PgTenantRls.config.guc}', '', false)")
+    yield
+  end
+end

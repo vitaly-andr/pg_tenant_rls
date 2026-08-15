@@ -42,26 +42,48 @@ module PgTenantRls
 
     # Compare live state against a declared manifest of { table => archetype }. Returns
     # the list of problems; empty means the perimeter matches.
-    def audit(connection, manifest:, discriminator: PgTenantRls.config.discriminator)
+    #
+    # Pass prefixes: to also catch the opposite mistake — a table that EXISTS in the
+    # perimeter but is missing from the manifest. Without it a forgotten table is simply
+    # never queried, and a check for "every table is declared" would be verifying itself.
+    def audit(connection, manifest:, prefixes: nil, discriminator: PgTenantRls.config.discriminator)
       report = call(connection, tables: manifest.keys.map(&:to_s), discriminator: discriminator)
       seen = report.to_h { |table| [table[:table], table] }
-      manifest.flat_map do |table, archetype|
+      declared = manifest.flat_map do |table, archetype|
         state = seen[table.to_s]
         state ? problems(state, archetype.to_sym) : ["#{table}: table not found"]
       end
+      declared + undeclared_tables(connection, manifest, prefixes, discriminator)
     end
 
     # audit, but raising. Use it in a deploy check or an acceptance spec.
-    def verify!(connection, manifest:, discriminator: PgTenantRls.config.discriminator)
-      found = audit(connection, manifest: manifest, discriminator: discriminator)
+    def verify!(connection, manifest:, prefixes: nil, discriminator: PgTenantRls.config.discriminator)
+      found = audit(connection, manifest: manifest, prefixes: prefixes, discriminator: discriminator)
       raise PgTenantRls::Error, "isolation check failed:\n#{found.join("\n")}" unless found.empty?
 
       true
     end
 
+    # Tables inside the perimeter that the manifest never mentions. An undeclared table
+    # is the failure worth catching: nobody chose an archetype for it, so nobody checked
+    # whether it is isolated.
+    def undeclared_tables(connection, manifest, prefixes, discriminator)
+      return [] if prefixes.nil? || prefixes.empty?
+
+      declared = manifest.keys.map(&:to_s)
+      found = call(connection, prefixes: prefixes, discriminator: discriminator).map { |t| t[:table] }
+      (found - declared).map { |table| "#{table}: in the perimeter but absent from the manifest" }
+    end
+
     # Whether the CURRENT role can be held by policies at all. Under a superuser or a
     # BYPASSRLS role every policy is inert, so an isolation test run as that role passes
-    # for the wrong reason — the most expensive false green there is.
+    # for the wrong reason — the most expensive false green there is. Worth asserting as
+    # the very first line of an isolation suite.
+    #
+    # Scope: this answers the ROLE-level question only (rolsuper, rolbypassrls). The
+    # other way to escape policies is per-table — an owner reading its own table without
+    # FORCE ROW LEVEL SECURITY — which is not a property of the role and is reported per
+    # table by #call as rls_forced. Both together cover the ways enforcement can be off.
     def enforced_for_current_role?(connection)
       row = connection.select_one("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
       return false if row.nil?

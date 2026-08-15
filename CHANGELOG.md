@@ -34,6 +34,16 @@
   the host supplies (the gem stays host-agnostic).
 - Under Rails, a boot-time warning when another module has taken over this gem's migration
   helper names in `ActiveRecord::Migration`.
+- Isolation specs against a live PostgreSQL, run as a `NOSUPERUSER`/`NOBYPASSRLS` role: two
+  tenants that cannot see or write each other's rows, `tenant` returning nothing without a
+  context while `public_catalog` returns everything, a composite foreign key rejecting another
+  tenant's parent, and `Inspector` read back against the real catalog. Until now the suite only
+  checked the text of the SQL it would have run, which is why the gem was marked not
+  release-ready.
+- `audit`/`verify!` accept `prefixes:` to catch the opposite mistake from a wrong archetype: a
+  table that exists inside the perimeter but is missing from the manifest. Without it a
+  forgotten table is simply never queried, so a check for "every table is declared" would be
+  verifying itself.
 
 ### Changed
 
