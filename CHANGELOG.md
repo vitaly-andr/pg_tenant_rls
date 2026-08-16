@@ -47,6 +47,17 @@
 
 ### Changed
 
+- `create_tenant_function!` — writes a `STABLE` SQL function returning the current tenant id
+  and points the configuration at it, so DDL calls the function instead of inlining the GUC
+  read. Without it the GUC name is part of the schema: it appears literally in every column
+  `DEFAULT` and every policy predicate, PostgreSQL offering no indirection for a GUC name
+  inside an expression, and a `DEFAULT` is baked when the migration runs — so a rename leaves
+  older tables stamping `NULL`, which the very policy meant to protect them then rejects.
+  With the function, a rename is one `CREATE OR REPLACE` and no table is touched.
+- Assigning a configuration attribute twice with conflicting values now raises. Two components
+  disagreeing about the tenant contour is not a preference being overridden — it is a
+  disagreement that otherwise stays invisible until the second engine's tables turn out to
+  read a GUC nobody sets. Re-declaring the same value is fine, since initializers can re-run.
 - `apply_tenant_archetype!(table, archetype, **options)` — brings a table to exactly one
   archetype without ever leaving it unprotected. The usual pairing of `drop_tenant_policies!`
   with a `create_*_policy!` opens a window in which a table with RLS enabled has no policy at

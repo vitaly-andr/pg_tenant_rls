@@ -10,6 +10,33 @@ module PgTenantRls
     include PolicyStatements
     include ForeignKeys
 
+    # Create (or replace) the function that DDL calls instead of inlining the GUC read,
+    # and point the configuration at it.
+    #
+    # This exists because the GUC name is otherwise part of the schema: it is written
+    # literally into every column DEFAULT and every policy predicate, and PostgreSQL has
+    # no indirection for a GUC name inside an expression. Changing it then means rewriting
+    # both — and a DEFAULT is baked when the migration runs, so tables created by an
+    # ordinary migration keep the old name until an explicit migration fixes them. That
+    # failure is not hypothetical: a stale DEFAULT stamps NULL, and the write is then
+    # rejected by the very policy meant to protect it.
+    #
+    # With the function in place the GUC name lives in one body. Changing it is a
+    # CREATE OR REPLACE; no table is touched, and two installs produce textually identical
+    # schemas even when they read different GUCs.
+    #
+    # STABLE, not IMMUTABLE: the value depends on the session. Schema-qualified at the call
+    # site, so a search_path cannot substitute another function. Run this BEFORE any DDL
+    # that should reference it.
+    def create_tenant_function!(name: "current_tenant_id", schema: "public")
+      qualified = "#{schema}.#{name}"
+      execute(<<~SQL)
+        CREATE OR REPLACE FUNCTION #{qualified}() RETURNS #{PgTenantRls.config.key_type}
+        LANGUAGE sql STABLE AS $$ SELECT #{PgTenantRls.guc_expression} $$;
+      SQL
+      PgTenantRls.config.tenant_function = qualified
+    end
+
     # Add the discriminator column, stamped from the GUC via a DB DEFAULT, so that even
     # raw or out-of-process (e.g. Go) INSERTs that set the GUC get the right tenant id.
     # null: false by default — runtime writes always carry a tenant context. Idempotent

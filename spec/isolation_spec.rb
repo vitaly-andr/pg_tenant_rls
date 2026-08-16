@@ -233,6 +233,55 @@ RSpec.describe "tenant isolation", :database do
     end
   end
 
+  describe "#create_tenant_function! — the GUC name out of the schema" do
+    after { PgTenantRls.config.tenant_function = nil }
+
+    before do
+      migration.create_tenant_function!(name: "spec_current_tenant")
+      TestDatabase.reset_table!("via_function", "name text")
+      migration.add_tenant_column!(:via_function)
+      migration.enable_tenant_rls!(:via_function)
+      migration.create_tenant_policy!(:via_function)
+    end
+
+    it "writes a call, not the GUC read, into the DDL" do
+      default = owner.select_value(<<~SQL)
+        SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a
+        JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = to_regclass('via_function') AND a.attname = 'tenant_id'
+      SQL
+      expect(default).to include("spec_current_tenant")
+      expect(default).not_to include("current_setting")
+    end
+
+    it "isolates exactly as the inlined form does" do
+      TestDatabase.as_tenant(1) { runtime.execute("INSERT INTO via_function (name) VALUES ('one')") }
+      TestDatabase.as_tenant(2) { runtime.execute("INSERT INTO via_function (name) VALUES ('two')") }
+
+      TestDatabase.as_tenant(1) { expect(runtime_count("via_function")).to eq(1) }
+      TestDatabase.without_tenant { expect(runtime_count("via_function")).to eq(0) }
+    end
+
+    # The point of the indirection: renaming the GUC touches one function body, and every
+    # table's DEFAULT and every policy follow without being rewritten.
+    it "follows a GUC rename through CREATE OR REPLACE alone" do
+      TestDatabase.as_tenant(7) { runtime.execute("INSERT INTO via_function (name) VALUES ('seven')") }
+      owner.execute(<<~SQL)
+        CREATE OR REPLACE FUNCTION public.spec_current_tenant() RETURNS bigint
+        LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('app.renamed_guc', true), '')::bigint $$;
+      SQL
+
+      runtime.execute("SELECT set_config('app.renamed_guc', '7', false)")
+      expect(runtime_count("via_function")).to eq(1)
+    ensure
+      runtime.execute("SELECT set_config('app.renamed_guc', '', false)")
+      owner.execute(<<~SQL)
+        CREATE OR REPLACE FUNCTION public.spec_current_tenant() RETURNS bigint
+        LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('app.current_tenant_id', true), '')::bigint $$;
+      SQL
+    end
+  end
+
   describe "Inspector against the live catalog" do
     before do
       TestDatabase.reset_table!("inspected", "name text")

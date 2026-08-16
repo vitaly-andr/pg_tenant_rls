@@ -32,11 +32,30 @@ module PgTenantRls
       @config = Configuration.new
     end
 
-    # SQL expression for the current tenant id, read from the GUC and cast to the key
-    # type. NULL when the GUC is unset (e.g. system jobs without context) so policies
+    # SQL expression for the current tenant id, as written into DDL.
+    #
+    # By default this inlines the GUC read, which makes the GUC name part of your schema:
+    # changing it later means rewriting every column DEFAULT and every policy predicate,
+    # and a DEFAULT is baked at migration time, so tables created by an ordinary migration
+    # will not pick up a new name on their own.
+    #
+    # Set config.tenant_function (see Migration#create_tenant_function!) to write a call
+    # to a SQL function instead. Then the GUC name lives in one function body: changing it
+    # is a CREATE OR REPLACE, schemas of different installs match textually, and no table
+    # DDL is touched.
+    def tenant_id_sql
+      return "#{config.tenant_function}()" if config.tenant_function
+
+      guc_expression
+    end
+
+    # The GUC read itself, always literal. This is what the indirection function wraps,
+    # so it must never route back through tenant_id_sql.
+    #
+    # NULL when the GUC is unset (e.g. system jobs without context) so policies
     # default-deny. missing_ok=true returns an empty string instead of raising; NULLIF
     # guards the cast (an empty string cannot be cast to bigint).
-    def tenant_id_sql
+    def guc_expression
       "NULLIF(current_setting(#{quote_literal(config.guc)}, true), '')::#{config.key_type}"
     end
 
