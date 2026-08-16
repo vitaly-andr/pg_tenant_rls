@@ -72,6 +72,17 @@ module PgTenantRls
       )
     end
 
+    # Both RLS flags in one round trip, as "<enabled><forced>" — e.g. "10" for a table
+    # with row security on but not forced. They come back joined because select_values
+    # yields a single column, and this runs for every table on every reconcile, so two
+    # queries for two booleans would be waste. nil when the table does not exist.
+    def rls_flags(table)
+      select_values(
+        "SELECT relrowsecurity::int::text || relforcerowsecurity::int::text " \
+        "FROM pg_class WHERE oid = to_regclass(#{quote(table.to_s)})"
+      ).first
+    end
+
     # EXISTS subquery against the gate table for create_gated_read_policy!.
     #
     # Note the gate table is read under ITS OWN policies: policy expressions run with the

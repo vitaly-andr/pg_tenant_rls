@@ -10,7 +10,9 @@ RSpec.describe PgTenantRls::Migration do
       attr_reader :executed, :queries
       # Catalog answers. Both nil by default: no policy exists (so recreate_policy!
       # takes the CREATE branch) and the column owns no sequence.
-      attr_accessor :existing_command, :sequence_name
+      # Named flags_value, not rls_flags: the DSL already has a private rls_flags(table),
+      # and an accessor of that name would shadow it.
+      attr_accessor :existing_command, :sequence_name, :flags_value
 
       def initialize
         super
@@ -44,6 +46,7 @@ RSpec.describe PgTenantRls::Migration do
         @queries << sql
         return [@existing_command].compact if sql.include?("polcmd")
         return [@sequence_name].compact if sql.include?("pg_get_serial_sequence")
+        return [@flags_value].compact if sql.include?("relrowsecurity")
 
         []
       end
@@ -196,6 +199,44 @@ RSpec.describe PgTenantRls::Migration do
       harness.create_tenant_policy!(:widgets)
       expect(sql).to include("DROP POLICY IF EXISTS widgets_tenant_all")
       expect(sql).to include("CREATE POLICY widgets_tenant_all")
+    end
+  end
+
+  describe "#enable_tenant_rls! — no ALTER when the flag is already set" do
+    it "issues both statements on a table that has neither" do
+      harness.flags_value = "00"
+      harness.enable_tenant_rls!(:widgets)
+      expect(sql).to include("ENABLE ROW LEVEL SECURITY")
+      expect(sql).to include("FORCE ROW LEVEL SECURITY")
+    end
+
+    it "issues nothing when row security is already enabled and forced" do
+      harness.flags_value = "11"
+      harness.enable_tenant_rls!(:widgets)
+      expect(sql).not_to include("ALTER TABLE")
+    end
+
+    # The flags are independent, and this is the case worth guarding: skipping FORCE
+    # because ENABLE is set would leave the owner bypassing every policy.
+    it "still forces a table that is enabled but not forced" do
+      harness.flags_value = "10"
+      harness.enable_tenant_rls!(:widgets)
+      expect(sql).to include("FORCE ROW LEVEL SECURITY")
+      expect(sql).not_to include("ENABLE ROW LEVEL SECURITY")
+    end
+
+    it "skips FORCE entirely when the caller asked not to force" do
+      harness.flags_value = "00"
+      harness.enable_tenant_rls!(:widgets, force: false)
+      expect(sql).to include("ENABLE ROW LEVEL SECURITY")
+      expect(sql).not_to include("FORCE ROW LEVEL SECURITY")
+    end
+
+    it "falls through to both ALTERs for an unknown table, rather than doing nothing" do
+      harness.flags_value = nil
+      harness.enable_tenant_rls!(:widgets)
+      expect(sql).to include("ENABLE ROW LEVEL SECURITY")
+      expect(sql).to include("FORCE ROW LEVEL SECURITY")
     end
   end
 

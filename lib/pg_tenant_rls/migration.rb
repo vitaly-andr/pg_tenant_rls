@@ -25,9 +25,24 @@ module PgTenantRls
 
     # Enable RLS. FORCE makes the table owner subject to policies too (otherwise the
     # owner bypasses them), so isolation does not depend on connecting as a non-owner.
+    #
+    # Each ALTER is skipped when its flag is already set, and that is not micro-optimism:
+    # PostgreSQL takes an ACCESS EXCLUSIVE lock even for a no-op ENABLE (verified against
+    # pg_locks). The statement itself is metadata-only and finishes in milliseconds at any
+    # table size, but acquiring that lock waits for every running query on the table and
+    # queues new ones behind it — so on a reconcile that runs each deploy, a statement
+    # with nothing to change freezes reads for as long as the slowest scan in flight.
+    #
+    # The two flags are independent: a table can be enabled but not forced, and skipping
+    # the FORCE on the strength of the ENABLE flag alone would silently leave the owner
+    # bypassing every policy. Unknown table (nil flags) falls through to the ALTERs, so
+    # PostgreSQL reports the missing table rather than this quietly doing nothing.
     def enable_tenant_rls!(table, force: true)
-      execute "ALTER TABLE #{quote_table_name(table)} ENABLE ROW LEVEL SECURITY;"
-      execute "ALTER TABLE #{quote_table_name(table)} FORCE ROW LEVEL SECURITY;" if force
+      flags = rls_flags(table)
+      execute "ALTER TABLE #{quote_table_name(table)} ENABLE ROW LEVEL SECURITY;" unless flags&.start_with?("1")
+      return unless force && !flags&.end_with?("1")
+
+      execute "ALTER TABLE #{quote_table_name(table)} FORCE ROW LEVEL SECURITY;"
     end
 
     def disable_tenant_rls!(table)

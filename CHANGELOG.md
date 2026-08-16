@@ -47,6 +47,14 @@
 
 ### Changed
 
+- `enable_tenant_rls!` skips each `ALTER` whose flag is already set. PostgreSQL takes an
+  `ACCESS EXCLUSIVE` lock even for a no-op `ENABLE ROW LEVEL SECURITY`: the statement is
+  metadata-only and finishes in milliseconds at any table size, but acquiring the lock waits
+  for every running query on the table and queues new ones behind it. On a reconcile that
+  runs each deploy, a statement with nothing to change froze reads for as long as the slowest
+  scan in flight. The two flags are checked independently — a table can be enabled without
+  being forced, and skipping the `FORCE` on the strength of the `ENABLE` flag would silently
+  leave the owner bypassing every policy.
 - Policy writes prefer `ALTER POLICY` when a policy of that name and command already exists.
   `DROP` followed by `CREATE` left a window in which a table with RLS enabled had no policy at
   all and default-denied every row — invisible on a migration, an outage on a live reconcile.

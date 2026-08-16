@@ -159,6 +159,40 @@ RSpec.describe "tenant isolation", :database do
     end
   end
 
+  describe "#enable_tenant_rls! against the real catalog" do
+    before { TestDatabase.reset_table!("flagged", "name text") }
+
+    def flags
+      owner.select_value(
+        "SELECT relrowsecurity::int::text || relforcerowsecurity::int::text " \
+        "FROM pg_class WHERE oid = to_regclass('flagged')"
+      )
+    end
+
+    it "reaches enabled-and-forced from a table with neither" do
+      expect(flags).to eq("00")
+      migration.enable_tenant_rls!(:flagged)
+      expect(flags).to eq("11")
+    end
+
+    it "leaves the state untouched when called again — the reconcile case" do
+      migration.enable_tenant_rls!(:flagged)
+      migration.enable_tenant_rls!(:flagged)
+      expect(flags).to eq("11")
+    end
+
+    # PostgreSQL takes ACCESS EXCLUSIVE even for a no-op ENABLE, so the point is not that
+    # the second call is harmless — it is that it must not run at all.
+    it "issues no ALTER on the second call" do
+      migration.enable_tenant_rls!(:flagged)
+      statements = []
+      recorder = TestDatabase::Runner.new(owner)
+      recorder.define_singleton_method(:execute) { |sql| statements << sql }
+      recorder.enable_tenant_rls!(:flagged)
+      expect(statements).to be_empty
+    end
+  end
+
   describe "Inspector against the live catalog" do
     before do
       TestDatabase.reset_table!("inspected", "name text")
