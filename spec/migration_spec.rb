@@ -158,6 +158,28 @@ RSpec.describe PgTenantRls::Migration do
     end
   end
 
+  describe "#create_reference_policy! — shared to read, admin-only to write" do
+    let(:admin) { "COALESCE(NULLIF(current_setting('app.is_super_admin', true), '')::boolean, false)" }
+
+    before { harness.create_reference_policy!(:kub_categories, writable_when: admin) }
+
+    it "lets everyone read, with no tenant condition at all" do
+      expect(sql).to include(%(CREATE POLICY kub_categories_reference_select ON "kub_categories" FOR SELECT))
+      expect(sql).to include("USING (true)")
+    end
+
+    it "admits writes only under the host's predicate" do
+      %w[insert update delete].each do |command|
+        line = harness.executed.find { |s| s.include?("kub_categories_reference_#{command}") }
+        expect(line).to include(admin)
+      end
+    end
+
+    it "never mentions the discriminator — these rows belong to nobody" do
+      expect(sql).not_to include("tenant_id")
+    end
+  end
+
   describe "#add_tenant_column!" do
     before { harness.add_tenant_column!(:widgets) }
 

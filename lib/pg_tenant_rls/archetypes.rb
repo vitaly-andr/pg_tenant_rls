@@ -12,7 +12,8 @@ module PgTenantRls
       shared_default: %w[shared_select shared_insert shared_update shared_delete],
       public_read: %w[public_select public_insert public_update public_delete],
       gated_read: %w[gated_select gated_insert gated_update gated_delete],
-      public_catalog: %w[catalog_select catalog_insert catalog_update catalog_delete]
+      public_catalog: %w[catalog_select catalog_insert catalog_update catalog_delete],
+      reference: %w[reference_select reference_insert reference_update reference_delete]
     }.freeze
 
     METHODS = {
@@ -20,7 +21,8 @@ module PgTenantRls
       shared_default: :create_shared_default_policy!,
       public_read: :create_public_read_policy!,
       gated_read: :create_gated_read_policy!,
-      public_catalog: :create_public_catalog_policy!
+      public_catalog: :create_public_catalog_policy!,
+      reference: :create_reference_policy!
     }.freeze
 
     module_function

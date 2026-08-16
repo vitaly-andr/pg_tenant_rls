@@ -282,6 +282,47 @@ RSpec.describe "tenant isolation", :database do
     end
   end
 
+  describe "the reference archetype — the hole an RLS-less shared table leaves open" do
+    let(:admin) { "COALESCE(NULLIF(current_setting('app.is_super_admin', true), '')::boolean, false)" }
+
+    before do
+      TestDatabase.reset_table!("shared_refs", "name text")
+      migration.enable_tenant_rls!(:shared_refs)
+      migration.create_reference_policy!(:shared_refs, writable_when: admin)
+      owner.execute("INSERT INTO shared_refs (name) VALUES ('canon')")
+    end
+
+    after { runtime.execute("SELECT set_config('app.is_super_admin', '', false)") }
+
+    it "is readable without any tenant context" do
+      TestDatabase.without_tenant { expect(runtime_count("shared_refs")).to eq(1) }
+    end
+
+    it "is readable inside a tenant context too, without belonging to one" do
+      TestDatabase.as_tenant(1) { expect(runtime_count("shared_refs")).to eq(1) }
+    end
+
+    it "refuses a write from an ordinary tenant — the rule that was unenforced before" do
+      TestDatabase.as_tenant(1) do
+        expect { runtime.execute("INSERT INTO shared_refs (name) VALUES ('invented')") }
+          .to raise_error(ActiveRecord::StatementInvalid, /row-level security/)
+      end
+    end
+
+    it "refuses deletion by a tenant, which a GRANT alone would have allowed" do
+      TestDatabase.as_tenant(1) do
+        runtime.execute("DELETE FROM shared_refs WHERE true")
+        expect(runtime_count("shared_refs")).to eq(1)
+      end
+    end
+
+    it "admits the administrator" do
+      runtime.execute("SELECT set_config('app.is_super_admin', 'true', false)")
+      runtime.execute("INSERT INTO shared_refs (name) VALUES ('added by admin')")
+      expect(runtime_count("shared_refs")).to eq(2)
+    end
+  end
+
   describe "Inspector against the live catalog" do
     before do
       TestDatabase.reset_table!("inspected", "name text")

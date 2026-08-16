@@ -47,6 +47,13 @@
 
 ### Changed
 
+- `create_reference_policy!(table, writable_when:)` — the shared-catalogue archetype:
+  everyone reads, only an administrator writes. No discriminator and no tenant column; the
+  rows belong to nobody, and what RLS adds here is the write side. Such tables are usually
+  left with RLS off, at which point "shared" quietly also means "writable" — the only thing
+  between a tenant and a `DELETE` is the `GRANT`, which is normally full. Shared and
+  immutable are different properties, and leaving RLS off implies only the first. The
+  predicate comes from the host; writes under a `BYPASSRLS` role are unaffected.
 - `create_tenant_function!` — writes a `STABLE` SQL function returning the current tenant id
   and points the configuration at it, so DDL calls the function instead of inlining the GUC
   read. Without it the GUC name is part of the schema: it appears literally in every column
