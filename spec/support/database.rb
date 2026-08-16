@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_record"
+require "securerandom"
 
 # Live-database harness for the isolation specs.
 #
@@ -12,7 +13,13 @@ module TestDatabase
   DATABASE = "pg_tenant_rls_test"
   # No "pg_" prefix: PostgreSQL reserves that namespace for role names.
   RUNTIME_ROLE = "tenant_rls_test_app"
-  RUNTIME_PASSWORD = "tenant_rls_test_app"
+
+  # Never a literal in the repository. Roles are cluster-wide objects, so this one is
+  # visible from every database on the server the specs happen to run against — which may
+  # well be a shared development cluster. A password published in a public gem would be a
+  # standing invitation to log in there. Generated per run unless the environment pins it,
+  # and reset on the role each time so a previous run's value stops working.
+  RUNTIME_PASSWORD = ENV.fetch("PG_TENANT_RLS_TEST_PASSWORD") { SecureRandom.hex(16) }
 
   # Points at the local development PostgreSQL by default; override for CI.
   HOST = ENV.fetch("PGHOST", "localhost")
@@ -70,11 +77,12 @@ module TestDatabase
     owner.execute(<<~SQL)
       DO $$ BEGIN
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '#{RUNTIME_ROLE}') THEN
-          CREATE ROLE #{RUNTIME_ROLE} LOGIN PASSWORD '#{RUNTIME_PASSWORD}'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+          CREATE ROLE #{RUNTIME_ROLE} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
         END IF;
       END $$;
     SQL
+    # Rotate on every run, so the credential only ever exists in this process.
+    owner.execute("ALTER ROLE #{RUNTIME_ROLE} PASSWORD #{owner.quote(RUNTIME_PASSWORD)};")
     owner.execute("GRANT USAGE, CREATE ON SCHEMA public TO #{RUNTIME_ROLE};")
   end
 
