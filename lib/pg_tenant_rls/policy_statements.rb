@@ -54,11 +54,16 @@ module PgTenantRls
 
     # polcmd of an existing policy, or nil when there is none. to_regclass yields NULL
     # for an unknown table, which simply matches no row.
+    #
+    # Deliberately select_values(...).first rather than select_value: the DSL is mixed
+    # into whatever object the consumer hands it, and a hand-rolled adapter proxying a
+    # short list of connection methods is a normal way to use this gem. Asking for one
+    # more method than necessary breaks those callers with a NoMethodError.
     def policy_command(table, name)
-      select_value(
+      select_values(
         "SELECT polcmd FROM pg_policy " \
         "WHERE polrelid = to_regclass(#{quote(table.to_s)}) AND polname = #{quote(name.to_s)}"
-      )
+      ).first
     end
 
     def policy_names(table)
@@ -99,9 +104,9 @@ module PgTenantRls
     # non-default primary key and after a table rename, which does not rename the
     # sequence.
     def serial_sequence(table, column)
-      select_value(
+      select_values(
         "SELECT pg_get_serial_sequence(#{quote(table.to_s)}, #{quote(column.to_s)})"
-      )
+      ).first
     end
   end
 end

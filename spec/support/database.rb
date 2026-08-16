@@ -115,7 +115,9 @@ module TestDatabase
       @connection = connection
     end
 
-    %i[execute quote_table_name quote_column_name quote select_value select_values].each do |name|
+    # The same short list Kub::Tenancy::MigrationAdapter forwards, on purpose: if the DSL
+    # ever needs a method outside it, that consumer breaks and so should these specs.
+    %i[execute quote_table_name quote_column_name quote select_values].each do |name|
       define_method(name) { |*args, **kwargs| @connection.public_send(name, *args, **kwargs) }
     end
   end

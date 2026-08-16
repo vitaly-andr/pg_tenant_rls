@@ -34,16 +34,18 @@ RSpec.describe PgTenantRls::Migration do
         "'#{value}'"
       end
 
+      # This harness deliberately implements exactly the methods a real consumer proxies
+      # — execute, the three quoting helpers and select_values — and nothing more. A
+      # hand-rolled adapter forwarding a short list of connection methods is a normal way
+      # to use this DSL (Kub::Tenancy::MigrationAdapter does precisely that). If the DSL
+      # starts calling anything outside this list, these specs must fail, because that
+      # consumer would fail too, with a NoMethodError at runtime.
       def select_values(sql)
         @queries << sql
+        return [@existing_command].compact if sql.include?("polcmd")
+        return [@sequence_name].compact if sql.include?("pg_get_serial_sequence")
+
         []
-      end
-
-      def select_value(sql)
-        return @existing_command if sql.include?("polcmd")
-        return @sequence_name if sql.include?("pg_get_serial_sequence")
-
-        nil
       end
     end.new
   end
