@@ -127,17 +127,29 @@ RSpec.describe PgTenantRls::Migration do
   end
 
   describe "#create_gated_read_policy!" do
-    before { harness.create_gated_read_policy!(:products, gate: { table: :publications, fk: :product_id }) }
-
-    it "reads rows the gate marks published OR own rows" do
-      expect(sql).to include(%(products_gated_select))
-      expect(sql).to include(%|EXISTS (SELECT 1 FROM "publications" g WHERE g."product_id" = "products"."id"|)
-      expect(sql).to include(%|AND g."published") OR "tenant_id" = #{guc_cast})|)
+    before do
+      harness.create_gated_read_policy!(:kub_products, gate: { table: "kub_publications", fk: "kub_product_id" })
     end
 
-    it "writes own rows only" do
-      expect(sql).to include(%(products_gated_insert ON "products" FOR INSERT))
+    it "reads rows the gate table marks published OR own rows" do
+      expect(sql).to include("kub_products_gated_select")
+      expect(sql).to include('EXISTS (SELECT 1 FROM "kub_publications" g WHERE')
+      expect(sql).to include('g."kub_product_id" = "kub_products".id')
+      expect(sql).to include('AND g."published"')
+      expect(sql).to include(%(OR "tenant_id" = #{guc_cast}))
+    end
+
+    it "writes own rows only (INSERT/UPDATE/DELETE keyed to current tenant)" do
+      expect(sql).to include(%(kub_products_gated_insert ON "kub_products" FOR INSERT))
+      expect(sql).to include(%(kub_products_gated_update ON "kub_products" FOR UPDATE))
+      expect(sql).to include(%(kub_products_gated_delete ON "kub_products" FOR DELETE))
       expect(sql).to include(%(WITH CHECK ("tenant_id" = #{guc_cast})))
+    end
+
+    it "honors a custom published_column" do
+      harness.create_gated_read_policy!(:widgets, gate: { table: "gate_widgets", fk: "widget_id" },
+                                                  published_column: :is_live)
+      expect(sql).to include(%(g."is_live"))
     end
   end
 

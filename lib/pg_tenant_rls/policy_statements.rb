@@ -67,6 +67,18 @@ module PgTenantRls
       )
     end
 
+    # EXISTS subquery against the gate table for create_gated_read_policy!.
+    #
+    # Note the gate table is read under ITS OWN policies: policy expressions run with the
+    # rights of the user running the query, so a gate that is itself tenant-scoped would
+    # hide other tenants' published rows and the gated table would look empty. The gate
+    # has to be readable in the same context — typically public_read on the same column.
+    def gated_predicate(table, gate, published_column)
+      "EXISTS (SELECT 1 FROM #{quote_table_name(gate.fetch(:table))} g " \
+        "WHERE g.#{quote_column_name(gate.fetch(:fk))} = #{quote_table_name(table)}.id " \
+        "AND g.#{quote_column_name(published_column)})"
+    end
+
     # ALTER TABLE has no ADD CONSTRAINT IF NOT EXISTS, so existence is checked first.
     # conrelid keeps the check on this table rather than on any same-named constraint.
     def add_constraint_unless_exists!(table, name, definition)
