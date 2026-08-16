@@ -24,10 +24,14 @@ module PgTenantRls
     # DROP + CREATE, because ALTER POLICY can change neither the command nor the
     # permissive/restrictive kind.
     def recreate_policy!(table, name, command:, role: nil, predicate: {})
-      if policy_command(table, name) == COMMAND_CODES.fetch(command)
+      existing = policy_command(table, name)
+      if existing == COMMAND_CODES.fetch(command)
         alter_policy!(table, name, role: role, predicate: predicate)
       else
-        execute "DROP POLICY IF EXISTS #{name} ON #{quote_table_name(table)};"
+        # Only when something is actually there. The catalog has just told us whether it
+        # is, so an unconditional DROP ... IF EXISTS would be a statement issued to
+        # discover what we already know.
+        execute "DROP POLICY #{name} ON #{quote_table_name(table)};" if existing
         create_policy!(table, name, command: command, role: role, predicate: predicate)
       end
     end
@@ -70,6 +74,20 @@ module PgTenantRls
       select_values(
         "SELECT polname FROM pg_policy WHERE polrelid = to_regclass(#{quote(table.to_s)})"
       )
+    end
+
+    # Remove this gem's policies for archetypes OTHER than the one just applied — what is
+    # left over when a table changes archetype, e.g. public_catalog -> tenant.
+    #
+    # Scoped to names this gem writes: matching by name is a weak signal in general, but
+    # here it errs safely. Worst case a hand-written policy that happens to be named like
+    # one of ours is dropped; the alternative — dropping everything on the table — is
+    # guaranteed to take the host's own policies with it every single time.
+    def prune_other_archetypes!(table, archetype)
+      keep = Archetypes.policy_names(table, archetype)
+      ((policy_names(table) & Archetypes.all_policy_names(table)) - keep).each do |name|
+        execute "DROP POLICY IF EXISTS #{quote_column_name(name)} ON #{quote_table_name(table)};"
+      end
     end
 
     # Both RLS flags in one round trip, as "<enabled><forced>" — e.g. "10" for a table

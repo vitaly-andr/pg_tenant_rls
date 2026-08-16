@@ -47,6 +47,16 @@
 
 ### Changed
 
+- `apply_tenant_archetype!(table, archetype, **options)` — brings a table to exactly one
+  archetype without ever leaving it unprotected. The usual pairing of `drop_tenant_policies!`
+  with a `create_*_policy!` opens a window in which a table with RLS enabled has no policy at
+  all and default-denies every row. On a live database that is worse than a lock: a blocked
+  query eventually returns the truth, while a query slipping through the window returns an
+  empty result that a cache is happy to keep. Here the archetype's policies are written
+  first, and only then are policies of *other* archetypes removed. Policies this gem did not
+  write are left alone, so a host override survives a reapply.
+- `recreate_policy!` no longer issues `DROP POLICY IF EXISTS` when the catalog has just
+  reported that no such policy exists.
 - `enable_tenant_rls!` skips each `ALTER` whose flag is already set. PostgreSQL takes an
   `ACCESS EXCLUSIVE` lock even for a no-op `ENABLE ROW LEVEL SECURITY`: the statement is
   metadata-only and finishes in milliseconds at any table size, but acquiring the lock waits

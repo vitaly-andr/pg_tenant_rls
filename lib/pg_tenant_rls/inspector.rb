@@ -16,15 +16,6 @@ module PgTenantRls
   # predicate changes. So verify! compares against a manifest the consumer declares, and
   # call reports on whatever perimeter it is handed.
   module Inspector
-    # Policy names each archetype writes, keyed by the symbol used in a manifest.
-    ARCHETYPE_POLICIES = {
-      tenant: %w[tenant_all],
-      shared_default: %w[shared_select shared_insert shared_update shared_delete],
-      public_read: %w[public_select public_insert public_update public_delete],
-      gated_read: %w[gated_select gated_insert gated_update gated_delete],
-      public_catalog: %w[catalog_select catalog_insert catalog_update catalog_delete]
-    }.freeze
-
     module_function
 
     # Full picture for every table in the perimeter. Pass tables: for an explicit list or
@@ -108,7 +99,7 @@ module PgTenantRls
     end
 
     def policy_problems(state, archetype)
-      expected = ARCHETYPE_POLICIES.fetch(archetype).map { |suffix| "#{state[:table]}_#{suffix}" }
+      expected = Archetypes.policy_names(state[:table], archetype)
       actual = state[:policies].map { |policy| policy[:name] }
       set_problems(state[:table], expected, actual) + restrictive_warnings(state)
     end

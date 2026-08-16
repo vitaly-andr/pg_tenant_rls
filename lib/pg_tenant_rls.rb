@@ -48,7 +48,9 @@ end
 
 require_relative "pg_tenant_rls/configuration"
 require_relative "pg_tenant_rls/context"
+require_relative "pg_tenant_rls/archetypes"
 require_relative "pg_tenant_rls/policy_statements"
+require_relative "pg_tenant_rls/foreign_keys"
 require_relative "pg_tenant_rls/migration"
 require_relative "pg_tenant_rls/inspector"
 require_relative "pg_tenant_rls/role_provisioner"

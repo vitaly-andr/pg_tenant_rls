@@ -197,7 +197,15 @@ RSpec.describe PgTenantRls::Migration do
     it "falls back to DROP + CREATE when the command differs" do
       harness.existing_command = "r" # SELECT, but the archetype wants ALL
       harness.create_tenant_policy!(:widgets)
-      expect(sql).to include("DROP POLICY IF EXISTS widgets_tenant_all")
+      expect(sql).to include("DROP POLICY widgets_tenant_all")
+      expect(sql).to include("CREATE POLICY widgets_tenant_all")
+    end
+
+    # IF EXISTS would be asking the database to tell us something the catalog read a
+    # moment earlier already answered.
+    it "issues no DROP at all when there is no policy to replace" do
+      harness.create_tenant_policy!(:widgets)
+      expect(sql).not_to include("DROP POLICY")
       expect(sql).to include("CREATE POLICY widgets_tenant_all")
     end
   end
@@ -237,6 +245,47 @@ RSpec.describe PgTenantRls::Migration do
       harness.enable_tenant_rls!(:widgets)
       expect(sql).to include("ENABLE ROW LEVEL SECURITY")
       expect(sql).to include("FORCE ROW LEVEL SECURITY")
+    end
+  end
+
+  describe "#apply_tenant_archetype! — reaching an archetype without stripping the table" do
+    it "writes the archetype's policies" do
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).to include("CREATE POLICY widgets_tenant_all")
+    end
+
+    it "issues no DROP when the table carries nothing else" do
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).not_to include("DROP POLICY")
+    end
+
+    it "removes leftovers of a previous archetype" do
+      allow(harness).to receive(:policy_names).and_return(
+        %w[widgets_catalog_select widgets_catalog_insert widgets_tenant_all]
+      )
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).to include(%(DROP POLICY IF EXISTS "widgets_catalog_select"))
+      expect(sql).to include(%(DROP POLICY IF EXISTS "widgets_catalog_insert"))
+    end
+
+    it "keeps the policies of the archetype being applied" do
+      allow(harness).to receive(:policy_names).and_return(%w[widgets_tenant_all])
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).not_to include("DROP POLICY")
+    end
+
+    # The reason to prefer this over drop_tenant_policies!: a host override survives.
+    it "leaves policies this gem never wrote alone" do
+      allow(harness).to receive(:policy_names).and_return(
+        %w[widgets_tenant_all widgets_super_admin_all portal_custom_policy]
+      )
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).not_to include("DROP POLICY")
+    end
+
+    it "accepts the archetype's own options" do
+      harness.apply_tenant_archetype!(:products, :public_read, published_column: :is_live)
+      expect(sql).to include(%(("is_live" OR "tenant_id" = #{guc_cast})))
     end
   end
 

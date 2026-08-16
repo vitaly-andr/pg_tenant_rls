@@ -68,6 +68,18 @@ class AddTenancyToWidgets < ActiveRecord::Migration[7.1]
 end
 ```
 
+Applying an archetype to a table that may already have one — a reconcile, a redeploy, a
+change of archetype — has a dedicated entry point:
+
+```ruby
+apply_tenant_archetype! :widgets, :tenant
+```
+
+It writes the archetype's policies first and removes other archetypes' leftovers afterwards,
+so the table is never left with RLS enabled and no policy — a state in which it silently
+returns zero rows to everyone. Policies this gem did not write are left in place, so a host
+override survives. Prefer it over `drop_tenant_policies!` followed by a `create_*_policy!`.
+
 Other access archetypes:
 
 ```ruby

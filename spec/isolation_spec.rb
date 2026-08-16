@@ -193,6 +193,46 @@ RSpec.describe "tenant isolation", :database do
     end
   end
 
+  describe "#apply_tenant_archetype! against the real catalog" do
+    before do
+      TestDatabase.reset_table!("switched", "name text")
+      migration.add_tenant_column!(:switched, null: true)
+      migration.enable_tenant_rls!(:switched)
+    end
+
+    def policy_names
+      owner.select_values("SELECT polname FROM pg_policy WHERE polrelid = to_regclass('switched') ORDER BY polname")
+    end
+
+    it "switches archetype, leaving only the new one's policies" do
+      migration.apply_tenant_archetype!(:switched, :public_catalog)
+      expect(policy_names).to all(include("catalog"))
+
+      migration.apply_tenant_archetype!(:switched, :tenant)
+      expect(policy_names).to eq(["switched_tenant_all"])
+    end
+
+    it "keeps a host policy the gem never wrote — drop_tenant_policies! would not" do
+      migration.apply_tenant_archetype!(:switched, :tenant)
+      migration.create_override_policy!(:switched, predicate: "current_setting('app.admin', true) = 'on'")
+      migration.apply_tenant_archetype!(:switched, :tenant)
+      expect(policy_names).to include("switched_override_all")
+    end
+
+    # The reason this method exists: no moment in which the table has RLS and no policy.
+    it "never leaves the table without a policy while switching" do
+      migration.apply_tenant_archetype!(:switched, :public_catalog)
+      statements = []
+      recorder = TestDatabase::Runner.new(owner)
+      recorder.define_singleton_method(:execute) { |sql| statements << sql }
+      recorder.apply_tenant_archetype!(:switched, :tenant)
+
+      first_drop = statements.index { |s| s.start_with?("DROP POLICY") }
+      first_write = statements.index { |s| s.match?(/\A(CREATE|ALTER) POLICY/) }
+      expect(first_write).to be < first_drop
+    end
+  end
+
   describe "Inspector against the live catalog" do
     before do
       TestDatabase.reset_table!("inspected", "name text")

@@ -8,6 +8,7 @@ module PgTenantRls
   # host and take config.runtime_role.
   module Migration
     include PolicyStatements
+    include ForeignKeys
 
     # Add the discriminator column, stamped from the GUC via a DB DEFAULT, so that even
     # raw or out-of-process (e.g. Go) INSERTs that set the GUC get the right tenant id.
@@ -50,9 +51,28 @@ module PgTenantRls
       execute "ALTER TABLE #{quote_table_name(table)} DISABLE ROW LEVEL SECURITY;"
     end
 
+    # Bring a table to exactly one archetype, without ever leaving it unprotected.
+    #
+    # Prefer this over drop_tenant_policies! followed by a create_*_policy!. That pair
+    # opens a window between the DROP and the CREATE in which a table with RLS enabled
+    # has no policy at all and therefore default-denies every row — on a live database
+    # that is not a lock, it is a wrong answer: a blocked query eventually returns the
+    # truth, while a query slipping through the window returns an empty result that a
+    # cache is happy to keep. Here the archetype's own policies are written first
+    # (ALTER POLICY in place when they already exist), and only then are policies of
+    # OTHER archetypes removed.
+    #
+    # Policies this gem did not write are left alone, so a host override survives a
+    # reapply instead of having to be reinstated after it.
+    def apply_tenant_archetype!(table, archetype, **options)
+      public_send(Archetypes::METHODS.fetch(archetype.to_sym), table, **options)
+      prune_other_archetypes!(table, archetype.to_sym)
+    end
+
     # Drop EVERY policy on the table, including ones this gem did not create (a host
     # override, say). Callers that reapply an archetype afterwards must reapply such
-    # policies too — this helper cannot tell them apart.
+    # policies too — this helper cannot tell them apart. See apply_tenant_archetype!
+    # for the version that does not need the table to be stripped first.
     def drop_tenant_policies!(table)
       policy_names(table).each do |name|
         execute "DROP POLICY IF EXISTS #{quote_column_name(name)} ON #{quote_table_name(table)};"
@@ -148,36 +168,6 @@ module PgTenantRls
                                 command: "ALL", role: PgTenantRls.config.policy_role)
       recreate_policy!(table, name, command: command, role: role,
                                     predicate: { using: predicate, check: predicate })
-    end
-
-    # Composite foreign key that cannot cross tenants. Referential integrity checks
-    # bypass row security (PostgreSQL, "Row Security Policies"), so a plain
-    # FOREIGN KEY (parent_id) REFERENCES parent (id) happily points at another tenant's
-    # row: invisible, but present — and the difference between a violation and a success
-    # is an existence oracle over every id. Keying the reference on the discriminator as
-    # well closes that: reaching a foreign parent would require a foreign discriminator,
-    # which WITH CHECK forbids.
-    #
-    # Applies to the `tenant` archetype ONLY. shared_default parents carry NULL
-    # discriminators (unreachable through this key), and public_read/public_catalog/
-    # gated_read reference other tenants on purpose.
-    def add_tenant_foreign_key!(child, parent, column:, parent_key: :id, on_delete: "RESTRICT")
-      discriminator = PgTenantRls.config.discriminator
-      add_tenant_unique_key!(parent, key: parent_key, discriminator: discriminator)
-      cols = "#{quote_column_name(discriminator)}, #{quote_column_name(column)}"
-      ref = "#{quote_column_name(discriminator)}, #{quote_column_name(parent_key)}"
-      add_constraint_unless_exists!(
-        child, "fk_#{child}_#{column}_tenant",
-        "FOREIGN KEY (#{cols}) REFERENCES #{quote_table_name(parent)} (#{ref}) ON DELETE #{on_delete}"
-      )
-    end
-
-    # UNIQUE (discriminator, key) on the parent — the constraint a composite foreign key
-    # references. A primary key on `key` alone does not satisfy PostgreSQL here: the
-    # reference must name a declared unique constraint over exactly these columns.
-    def add_tenant_unique_key!(table, key: :id, discriminator: PgTenantRls.config.discriminator)
-      cols = "#{quote_column_name(discriminator)}, #{quote_column_name(key)}"
-      add_constraint_unless_exists!(table, "uq_#{table}_tenant_#{key}", "UNIQUE (#{cols})")
     end
 
     # sequence: :auto asks the catalog which sequence the column owns. Pass a name to
