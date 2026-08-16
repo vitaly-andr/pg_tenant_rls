@@ -162,9 +162,16 @@ PostgreSQL **as an unprivileged role** — they create a `pg_tenant_rls_test` da
 other's rows. Without that role the specs would pass with RLS switched off entirely, so the
 role is the test, not a detail of its setup.
 
-Point them at your database with `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` (defaults:
-`localhost:5433`, user `spree`). With no database reachable they skip with a reason rather
-than fail — a skipped isolation suite proves nothing, and should say so.
+Start the throwaway instance they expect with `docker compose up -d` (PostgreSQL 18 on port
+5434, no volume — it holds nothing worth keeping). Point them elsewhere with `PGHOST`,
+`PGPORT`, `PGUSER`, `PGPASSWORD`.
+
+Do not aim them at a cluster you care about. They create roles and drop tables on every run,
+and a role in PostgreSQL is a **cluster-wide** object — a role made "for the test database" is
+an account on the whole server, visible from every database on it.
+
+With no database reachable the isolation specs skip with a reason rather than fail. A skipped
+isolation suite proves nothing, and should say so out loud.
 
 ## License
 

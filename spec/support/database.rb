@@ -21,11 +21,13 @@ module TestDatabase
   # and reset on the role each time so a previous run's value stops working.
   RUNTIME_PASSWORD = ENV.fetch("PG_TENANT_RLS_TEST_PASSWORD") { SecureRandom.hex(16) }
 
-  # Points at the local development PostgreSQL by default; override for CI.
+  # Defaults point at the throwaway instance in docker-compose.yml, deliberately not at
+  # a shared development cluster: these specs create roles and drop tables on every run,
+  # and roles are cluster-wide objects rather than per-database ones. Override for CI.
   HOST = ENV.fetch("PGHOST", "localhost")
-  PORT = ENV.fetch("PGPORT", "5433")
-  OWNER_USER = ENV.fetch("PGUSER", "spree")
-  OWNER_PASSWORD = ENV.fetch("PGPASSWORD", "spree")
+  PORT = ENV.fetch("PGPORT", "5434")
+  OWNER_USER = ENV.fetch("PGUSER", "tenant_rls")
+  OWNER_PASSWORD = ENV.fetch("PGPASSWORD", "tenant_rls")
 
   # Connection class for the unprivileged role. A separate abstract class is what keeps
   # the two connections apart — ActiveRecord pools per class, not per call.
