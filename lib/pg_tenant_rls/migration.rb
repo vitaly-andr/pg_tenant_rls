@@ -11,6 +11,17 @@ module PgTenantRls
     include ForeignKeys
     include Policies
 
+    # Whether a method found on ActiveRecord::Migration came from this gem.
+    #
+    # Not simply `owner == Migration`: the DSL is assembled from several modules, so most of
+    # its methods are owned by one of those rather than by Migration itself. Comparing against
+    # Migration alone made the gem accuse itself of hijacking every helper it had split out —
+    # and the warning that says so then fires on every boot of every consumer, which teaches
+    # people to ignore the one message meant to be read.
+    def self.own?(owner)
+      owner == self || included_modules.include?(owner)
+    end
+
     # Create (or replace) the function that DDL calls instead of inlining the GUC read,
     # and point the configuration at it.
     #

@@ -188,6 +188,31 @@ RSpec.describe PgTenantRls::Migration do
     end
   end
 
+  # The hijack warning exists to be read. It fires when another module has taken over one of
+  # these names in ActiveRecord::Migration — and it fired on every boot of every consumer,
+  # naming this gem's own modules, from the moment the DSL was split across several of them.
+  # A warning that always fires teaches people to ignore it, and then the real one passes
+  # unread. This is the check that catches the next split.
+  describe ".own? — which module counts as this gem" do
+    it "recognises every public helper as its own" do
+      strangers = described_class.public_instance_methods.reject do |name|
+        described_class.own?(described_class.instance_method(name).owner)
+      end
+
+      expect(strangers).to be_empty
+    end
+
+    it "recognises the modules the DSL is assembled from" do
+      expect(described_class.own?(PgTenantRls::Policies)).to be(true)
+      expect(described_class.own?(PgTenantRls::ForeignKeys)).to be(true)
+      expect(described_class.own?(PgTenantRls::PolicyStatements)).to be(true)
+    end
+
+    it "does not recognise a module from elsewhere — otherwise the warning could never fire" do
+      expect(described_class.own?(Module.new)).to be(false)
+    end
+  end
+
   describe "policy_role — the TO clause, separate from runtime_role" do
     it "writes TO only when policy_role is set" do
       PgTenantRls.config.policy_role = "app_runtime"

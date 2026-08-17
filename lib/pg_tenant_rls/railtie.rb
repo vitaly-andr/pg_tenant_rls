@@ -33,7 +33,7 @@ module PgTenantRls
     def self.hijacked_helpers
       PgTenantRls::Migration.public_instance_methods.filter_map do |name|
         owner = ActiveRecord::Migration.instance_method(name).owner
-        [name, owner] unless owner == PgTenantRls::Migration
+        [name, owner] unless PgTenantRls::Migration.own?(owner)
       rescue NameError
         nil
       end
