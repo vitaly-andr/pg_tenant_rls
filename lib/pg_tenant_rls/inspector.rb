@@ -92,10 +92,26 @@ module PgTenantRls
     def discriminator_problems(state)
       column = state[:discriminator]
       return ["#{state[:table]}: no discriminator column"] if column.nil?
-      return [] if column[:default].to_s.include?(PgTenantRls.config.guc)
+      return [] if reads_current_tenant?(column[:default])
 
-      ["#{state[:table]}: discriminator DEFAULT does not read #{PgTenantRls.config.guc} " \
+      ["#{state[:table]}: discriminator DEFAULT does not read #{expected_tenant_source} " \
        "(found #{column[:default].inspect})"]
+    end
+
+    # What a correct DEFAULT looks like depends on how the contour is configured. With
+    # config.tenant_function set, DDL calls the function and the GUC name does not appear
+    # in the DEFAULT at all — checking for the literal GUC would then fail every correctly
+    # built table. Matched on the bare function name so a schema qualification present in
+    # one place and absent in the other does not matter.
+    def reads_current_tenant?(default)
+      function = PgTenantRls.config.tenant_function
+      return default.to_s.include?(function.to_s.split(".").last) if function
+
+      default.to_s.include?(PgTenantRls.config.guc)
+    end
+
+    def expected_tenant_source
+      PgTenantRls.config.tenant_function || PgTenantRls.config.guc
     end
 
     def policy_problems(state, archetype)

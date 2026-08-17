@@ -41,6 +41,24 @@ RSpec.describe PgTenantRls::Inspector do
         .to include(a_string_matching(/no discriminator column/))
     end
 
+    # The DEFAULT of a correctly built table stops mentioning the GUC once the indirection
+    # function is in use, so checking for the literal name would condemn every such table.
+    it "accepts a DEFAULT that calls the indirection function" do
+      PgTenantRls.config.tenant_function = "public.current_tenant_id"
+      via_function = { column: "tenant_id", type: "bigint", not_null: true,
+                       default: "public.current_tenant_id()" }
+
+      expect(described_class.problems(table(discriminator: via_function), :tenant)).to be_empty
+    end
+
+    it "still flags a DEFAULT calling some other function" do
+      PgTenantRls.config.tenant_function = "public.current_tenant_id"
+      wrong = { column: "tenant_id", type: "bigint", not_null: true, default: "public.something_else()" }
+
+      expect(described_class.problems(table(discriminator: wrong), :tenant))
+        .to include(a_string_matching(/does not read public\.current_tenant_id/))
+    end
+
     it "flags a DEFAULT wired to a different GUC — the 022 failure mode" do
       stale = { column: "tenant_id", type: "bigint", not_null: true,
                 default: "NULLIF(current_setting('app.current_tenant_id'::text, true), ''::text)::bigint" }
