@@ -153,9 +153,27 @@ RSpec.describe "tenant isolation", :database do
 
     it "replaces the policy when the command changes, since ALTER cannot" do
       before_oid = policy_oid
-      migration.send(:recreate_policy!, :rewritten, "rewritten_tenant_all",
-                     command: "SELECT", predicate: { using: "true" })
+      migration.send(:recreate_policy!, :rewritten, declaration(command: "SELECT", using: "true"))
       expect(policy_oid).not_to eq(before_oid)
+    end
+
+    # The other half of the same documented rule: "To change other properties of a policy,
+    # such as the command to which it applies or whether it is permissive or restrictive,
+    # the policy must be dropped and recreated." Altering in place instead would leave a
+    # policy declared restrictive still combining with OR — widening where the
+    # redeclaration asked to narrow. The oid is what distinguishes the two; the resulting
+    # predicate text is identical either way.
+    it "replaces the policy when permissiveness changes, for the same reason" do
+      before_oid = policy_oid
+      migration.send(:recreate_policy!, :rewritten,
+                     declaration(command: "ALL", permissive: false, using: "true"))
+      expect(policy_oid).not_to eq(before_oid)
+      expect(owner.select_value("SELECT polpermissive FROM pg_policy WHERE oid = #{policy_oid}"))
+        .to be(false)
+    end
+
+    def declaration(**attributes)
+      PgTenantRls::PolicyDeclaration.new(name: "rewritten_tenant_all", **attributes)
     end
   end
 
@@ -219,6 +237,24 @@ RSpec.describe "tenant isolation", :database do
       expect(policy_names).to include("switched_override_all")
     end
 
+    # Pruning used to know only the gem's own names, so a host archetype's policies
+    # survived every switch away from it — the table ended up under two archetypes at once,
+    # combining with OR.
+    it "prunes a host-registered archetype's policies too" do
+      PgTenantRls.register_archetype(:audited) do |a|
+        a.discriminator false
+        a.policy :audited_select, command: "SELECT", using: "true"
+      end
+
+      migration.apply_tenant_archetype!(:switched, :audited)
+      expect(policy_names).to eq(["switched_audited_select"])
+
+      migration.apply_tenant_archetype!(:switched, :tenant)
+      expect(policy_names).to eq(["switched_tenant_all"])
+    ensure
+      PgTenantRls::Archetypes.reset!
+    end
+
     # The reason this method exists: no moment in which the table has RLS and no policy.
     it "never leaves the table without a policy while switching" do
       migration.apply_tenant_archetype!(:switched, :public_catalog)
@@ -230,6 +266,85 @@ RSpec.describe "tenant isolation", :database do
       first_drop = statements.index { |s| s.start_with?("DROP POLICY") }
       first_write = statements.index { |s| s.match?(/\A(CREATE|ALTER) POLICY/) }
       expect(first_write).to be < first_drop
+    end
+  end
+
+  # US1, proven where it counts. The gem contains no author_id, no app.current_author_id
+  # and no :authored — all of it arrives at runtime, and the rows a query can reach are
+  # decided by PostgreSQL under a role that cannot bypass a policy.
+  describe "an archetype the host registered, against the real catalog" do
+    author_sql = "NULLIF(current_setting('app.current_author_id', true), '')::bigint"
+
+    before do
+      PgTenantRls.register_archetype(:authored) do |a|
+        a.discriminator false
+        a.policy :authored_select, command: "SELECT", using: "author_id = #{author_sql}"
+        a.policy :authored_insert, command: "INSERT", check: "author_id = #{author_sql}"
+      end
+
+      TestDatabase.reset_table!("notes", "body text, author_id bigint")
+      migration.enable_tenant_rls!(:notes)
+      migration.apply_tenant_archetype!(:notes, :authored)
+      owner.execute("INSERT INTO notes (body, author_id) VALUES ('mine', 1), ('theirs', 2)")
+    end
+
+    after { PgTenantRls::Archetypes.reset! }
+
+    def as_author(id)
+      runtime.execute("SELECT set_config('app.current_author_id', '#{id}', false)")
+      yield
+    ensure
+      runtime.execute("SELECT set_config('app.current_author_id', '', false)")
+    end
+
+    def policy_oid(name)
+      owner.select_value("SELECT oid FROM pg_policy WHERE polname = '#{name}'")
+    end
+
+    it "reaches exactly the rows the host's own predicate admits" do
+      as_author(1) { expect(runtime_count("notes")).to eq(1) }
+      as_author(2) { expect(runtime_count("notes")).to eq(1) }
+    end
+
+    it "refuses a write the declaration's WITH CHECK does not admit" do
+      as_author(1) do
+        expect { runtime.execute("INSERT INTO notes (body, author_id) VALUES ('x', 2)") }
+          .to raise_error(ActiveRecord::StatementInvalid, /row-level security/)
+      end
+    end
+
+    # Closed by default, like every archetype but public_catalog: with no context the
+    # predicate is NULL, and NULL is not true.
+    it "shows nothing at all when the host's context is missing" do
+      expect(runtime_count("notes")).to eq(0)
+    end
+
+    it "carries no discriminator column, since the declaration asked for none" do
+      expect(owner.select_values(<<~SQL)).to be_empty
+        SELECT attname FROM pg_attribute
+        WHERE attrelid = to_regclass('notes') AND attname = 'tenant_id' AND NOT attisdropped
+      SQL
+    end
+
+    # US3 for a registered archetype: it inherits the mechanics rather than approximating
+    # them. The oid is the only thing that tells altering apart from recreating — the
+    # predicate text, and every row reachable through it, come out the same either way.
+    it "is altered in place on re-application, never dropped and recreated" do
+      before_oid = policy_oid("notes_authored_select")
+      migration.apply_tenant_archetype!(:notes, :authored)
+      expect(policy_oid("notes_authored_select")).to eq(before_oid)
+    end
+
+    it "issues no ALTER TABLE on re-application either, the flags already being set" do
+      statements = []
+      recorder = TestDatabase::Runner.new(owner)
+      recorder.define_singleton_method(:execute) { |sql| statements << sql }
+      recorder.enable_tenant_rls!(:notes)
+      expect(statements).to be_empty
+    end
+
+    it "is verified against a manifest like any archetype the gem ships" do
+      expect(PgTenantRls::Inspector.verify!(owner, manifest: { notes: :authored })).to be(true)
     end
   end
 

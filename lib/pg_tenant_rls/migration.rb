@@ -103,9 +103,34 @@ module PgTenantRls
     #
     # Policies this gem did not write are left alone, so a host override survives a
     # reapply instead of having to be reinstated after it.
-    def apply_tenant_archetype!(table, archetype, **options)
-      public_send(Archetypes::METHODS.fetch(archetype.to_sym), table, **options)
-      prune_other_archetypes!(table, archetype.to_sym)
+    #
+    # The archetype is looked up in the registry, so one registered by a host behaves here
+    # exactly as one shipped with the gem. An unknown name raises naming itself and what is
+    # registered — the answer to "unknown archetype" should not be a missing method.
+    def apply_tenant_archetype!(table, archetype, role: PgTenantRls.config.policy_role, **options)
+      declared = Archetypes.fetch(archetype)
+      ensure_discriminator_column!(table, declared, options)
+      write_archetype_policies!(table, declared.name, role: role, **options)
+      prune_other_archetypes!(table, declared.name)
+    end
+
+    # Add the discriminator column when the archetype needs one and the table has none.
+    #
+    # The archetype knows this, and it is the only thing that can: its predicates already
+    # reference that column. Kept beside the caller instead, it becomes a list to remember
+    # whenever an archetype is added — the engine grew four such lists and one of them then
+    # disagreed with the others.
+    #
+    # The catalog is asked first rather than leaning on ADD COLUMN IF NOT EXISTS, for the
+    # same reason enable_tenant_rls! checks its flags: an ALTER TABLE with nothing to change
+    # still takes an ACCESS EXCLUSIVE lock, and this runs for every table on every reconcile.
+    def ensure_discriminator_column!(table, archetype, options)
+      return unless archetype.discriminator?
+
+      column = archetype.resolve_options(options).fetch(:column)
+      return if column.nil? || column_present?(table, column)
+
+      add_tenant_column!(table, column: column, null: archetype.nullable_discriminator?)
     end
 
     # Drop EVERY policy on the table, including ones this gem did not create (a host

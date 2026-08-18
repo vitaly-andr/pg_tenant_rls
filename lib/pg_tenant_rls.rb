@@ -28,6 +28,25 @@ module PgTenantRls
       config
     end
 
+    # Declare an access archetype of your own. Thereafter it behaves exactly like one the gem
+    # ships — applied, re-applied, pruned when a table changes archetype, and verified.
+    #
+    #   PgTenantRls.register_archetype(:membership) do |a|
+    #     a.discriminator false
+    #     a.policy :membership_select, command: "SELECT",
+    #              using: "id IN (SELECT portal_current_user_team_ids())"
+    #   end
+    #
+    # The expressions are yours and are written verbatim; the gem never parses them and never
+    # learns what that function means. That is the seam — everything host-specific stays on
+    # your side of it.
+    def register_archetype(name)
+      archetype = Archetype.new(name)
+      yield archetype if block_given?
+      Archetypes.register(archetype)
+      archetype
+    end
+
     def reset_config!
       @config = Configuration.new
     end
@@ -67,7 +86,10 @@ end
 
 require_relative "pg_tenant_rls/configuration"
 require_relative "pg_tenant_rls/context"
+require_relative "pg_tenant_rls/policy_declaration"
+require_relative "pg_tenant_rls/archetype"
 require_relative "pg_tenant_rls/archetypes"
+require_relative "pg_tenant_rls/introspection"
 require_relative "pg_tenant_rls/policy_statements"
 require_relative "pg_tenant_rls/foreign_keys"
 require_relative "pg_tenant_rls/policies"
@@ -75,3 +97,8 @@ require_relative "pg_tenant_rls/migration"
 require_relative "pg_tenant_rls/inspector"
 require_relative "pg_tenant_rls/role_provisioner"
 require_relative "pg_tenant_rls/railtie" if defined?(::Rails::Railtie)
+
+# The archetypes the gem ships go into the registry through the same door a host uses. If
+# they took a shortcut, the door would be free to rot: nothing the gem itself relies on
+# would exercise it.
+PgTenantRls::Policies.register_built_ins!

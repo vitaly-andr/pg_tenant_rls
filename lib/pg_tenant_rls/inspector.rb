@@ -82,14 +82,25 @@ module PgTenantRls
       !(Catalog.cast_bool(row["rolsuper"]) || Catalog.cast_bool(row["rolbypassrls"]))
     end
 
+    # Expectations come from the registry, so a host archetype is verifiable on the same
+    # terms as one the gem ships. Fetching also settles the unknown-archetype case: a
+    # manifest naming something nobody registered is a mistake in the manifest, and saying
+    # so beats reporting every policy on the table as unexpected.
     def problems(state, archetype)
+      declared = Archetypes.fetch(archetype)
       found = []
       found << "#{state[:table]}: RLS is not enabled" unless state[:rls_enabled]
       found << "#{state[:table]}: RLS is not forced (the owner bypasses policies)" unless state[:rls_forced]
-      found + discriminator_problems(state) + policy_problems(state, archetype)
+      found + discriminator_problems(state, declared) + policy_problems(state, declared)
     end
 
-    def discriminator_problems(state)
+    # Only for an archetype that says it needs one. A shared catalogue owned by nobody has
+    # no such column by design, and demanding it reported every correctly built reference
+    # table as broken — the archetype is the only thing that knows, since its predicates
+    # are what reference the column.
+    def discriminator_problems(state, archetype)
+      return [] unless archetype.discriminator?
+
       column = state[:discriminator]
       return ["#{state[:table]}: no discriminator column"] if column.nil?
       return [] if reads_current_tenant?(column[:default])
@@ -115,7 +126,7 @@ module PgTenantRls
     end
 
     def policy_problems(state, archetype)
-      expected = Archetypes.policy_names(state[:table], archetype)
+      expected = archetype.policy_names(state[:table])
       actual = state[:policies].map { |policy| policy[:name] }
       set_problems(state[:table], expected, actual) + restrictive_warnings(state)
     end

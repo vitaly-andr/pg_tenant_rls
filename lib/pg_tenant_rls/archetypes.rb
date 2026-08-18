@@ -1,39 +1,70 @@
 # frozen_string_literal: true
 
 module PgTenantRls
-  # Single registry of the access archetypes: the policies each one writes, and the helper
-  # that writes them. Kept in one place because three parts of the gem need the same list —
-  # the migration DSL when applying an archetype, the pruning that removes another
-  # archetype's leftovers, and the inspector when checking a table against a manifest.
+  # The registry of access archetypes — the single source consulted when applying one, when
+  # pruning another's leftovers, and when verifying a table against a manifest.
+  #
+  # Single on purpose. This started as two frozen hashes, and a consumer kept a third copy of
+  # the same list beside them; the copy drifted through one added archetype and took 197 of its
+  # 741 examples down. A list that exists twice is a list that will disagree with itself.
+  #
+  # The archetypes this gem ships are registered through the same door as a host's, so the
+  # mechanism cannot drift from what the gem itself provides.
   module Archetypes
-    # Policy name suffixes per archetype. The full name is "<table>_<suffix>".
-    POLICIES = {
-      tenant: %w[tenant_all],
-      shared_default: %w[shared_select shared_insert shared_update shared_delete],
-      public_read: %w[public_select public_insert public_update public_delete],
-      gated_read: %w[gated_select gated_insert gated_update gated_delete],
-      public_catalog: %w[catalog_select catalog_insert catalog_update catalog_delete],
-      reference: %w[reference_select reference_insert reference_update reference_delete]
-    }.freeze
-
-    METHODS = {
-      tenant: :create_tenant_policy!,
-      shared_default: :create_shared_default_policy!,
-      public_read: :create_public_read_policy!,
-      gated_read: :create_gated_read_policy!,
-      public_catalog: :create_public_catalog_policy!,
-      reference: :create_reference_policy!
-    }.freeze
-
     module_function
 
-    def policy_names(table, archetype)
-      POLICIES.fetch(archetype.to_sym).map { |suffix| "#{table}_#{suffix}" }
+    def registry
+      @registry ||= {}
     end
 
-    # Every policy name this gem could have written for the table, across all archetypes.
+    # Add an archetype. Re-registering an identical definition is fine — initializers get
+    # re-run, and agreement is not a conflict. A differing definition under a name already
+    # taken is two components disagreeing about what that name means, which is the kind of
+    # thing that otherwise surfaces as a policy nobody expected.
+    def register(archetype)
+      archetype.validate!
+      existing = registry[archetype.name]
+
+      if existing && existing != archetype
+        raise PgTenantRls::Error,
+              "archetype #{archetype.name} is already registered with a different definition. " \
+              "Two components disagreeing about what an archetype means will write policies " \
+              "one of them does not expect."
+      end
+
+      registry[archetype.name] = archetype
+    end
+
+    def fetch(name)
+      registry.fetch(name.to_sym) do
+        raise PgTenantRls::Error,
+              "unknown archetype #{name.inspect}; registered: #{names.join(", ")}"
+      end
+    end
+
+    def registered?(name) = registry.key?(name.to_sym)
+
+    def names = registry.keys
+
+    def policy_names(table, archetype)
+      fetch(archetype).policy_names(table)
+    end
+
+    # Every policy name any registered archetype could write for this table — the boundary of
+    # what pruning may remove. Anything outside it belongs to somebody else and is left alone.
     def all_policy_names(table)
-      POLICIES.keys.flat_map { |archetype| policy_names(table, archetype) }
+      registry.each_value.flat_map { |archetype| archetype.policy_names(table) }
+    end
+
+    # Back to what the gem ships. For tests; not part of the contract — registration is
+    # boot-time and additive, and there is no way to unregister one archetype.
+    #
+    # The built-ins are put back rather than left out, because they are not a starting state
+    # the registry happens to have: they are the gem's own archetypes, and a registry without
+    # them is a state no consumer ever runs in.
+    def reset!
+      @registry = {}
+      Policies.register_built_ins!
     end
   end
 end

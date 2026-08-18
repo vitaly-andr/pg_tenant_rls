@@ -12,7 +12,10 @@ RSpec.describe PgTenantRls::Migration do
       # takes the CREATE branch) and the column owns no sequence.
       # Named flags_value, not rls_flags: the DSL already has a private rls_flags(table),
       # and an accessor of that name would shadow it.
-      attr_accessor :existing_command, :sequence_name, :flags_value
+      #
+      # existing_shape is polcmd and polpermissive joined, the way the catalog read returns
+      # them: "*1" is a permissive ALL policy, "*0" the same command made restrictive.
+      attr_accessor :existing_shape, :sequence_name, :flags_value
 
       def initialize
         super
@@ -44,7 +47,7 @@ RSpec.describe PgTenantRls::Migration do
       # consumer would fail too, with a NoMethodError at runtime.
       def select_values(sql)
         @queries << sql
-        return [@existing_command].compact if sql.include?("polcmd")
+        return [@existing_shape].compact if sql.include?("polcmd")
         return [@sequence_name].compact if sql.include?("pg_get_serial_sequence")
         return [@flags_value].compact if sql.include?("relrowsecurity")
 
@@ -228,7 +231,7 @@ RSpec.describe PgTenantRls::Migration do
 
   describe "policy rewrite — ALTER over DROP + CREATE" do
     it "alters in place when a policy of the same command already exists" do
-      harness.existing_command = "*"
+      harness.existing_shape = "*1"
       harness.create_tenant_policy!(:widgets)
       expect(sql).to include(%(ALTER POLICY widgets_tenant_all ON "widgets" TO PUBLIC))
       expect(sql).not_to include("DROP POLICY")
@@ -236,13 +239,13 @@ RSpec.describe PgTenantRls::Migration do
     end
 
     it "spells out TO PUBLIC so a stale role binding is cleared, not left behind" do
-      harness.existing_command = "*"
+      harness.existing_shape = "*1"
       harness.create_tenant_policy!(:widgets)
       expect(sql).to include("TO PUBLIC")
     end
 
     it "falls back to DROP + CREATE when the command differs" do
-      harness.existing_command = "r" # SELECT, but the archetype wants ALL
+      harness.existing_shape = "r1" # SELECT, but the archetype wants ALL
       harness.create_tenant_policy!(:widgets)
       expect(sql).to include("DROP POLICY widgets_tenant_all")
       expect(sql).to include("CREATE POLICY widgets_tenant_all")
@@ -333,6 +336,101 @@ RSpec.describe PgTenantRls::Migration do
     it "accepts the archetype's own options" do
       harness.apply_tenant_archetype!(:products, :public_read, published_column: :is_live)
       expect(sql).to include(%(("is_live" OR "tenant_id" = #{guc_cast})))
+    end
+  end
+
+  # US1: an archetype the gem knows nothing about, declared the way a host declares one.
+  # Nothing in lib/ names :membership, portal_team_ids() or owner_id — that is the seam.
+  describe "an archetype the host registered" do
+    before do
+      PgTenantRls.register_archetype(:membership) do |a|
+        a.discriminator false
+        a.policy :membership_select, command: "SELECT", using: "id IN (SELECT portal_team_ids())"
+        a.policy name: "teams_owner_insert", command: "INSERT", check: "owner_id = portal_user_id()"
+      end
+    end
+
+    after { PgTenantRls::Archetypes.reset! }
+
+    it "writes the policies the declaration names, with its expressions untouched" do
+      harness.apply_tenant_archetype!(:teams, :membership)
+      expect(sql).to include(
+        %(CREATE POLICY teams_membership_select ON "teams" FOR SELECT USING (id IN (SELECT portal_team_ids()));)
+      )
+    end
+
+    # FR-005. A rename of live policy objects buys nothing functional, so an archetype is
+    # allowed to adopt the names a schema already carries.
+    it "adopts an explicit policy name rather than imposing the suffix rule" do
+      harness.apply_tenant_archetype!(:teams, :membership)
+      expect(sql).to include(%(CREATE POLICY teams_owner_insert ON "teams" FOR INSERT))
+      expect(sql).not_to include("teams_membership_insert")
+    end
+
+    it "asks for no discriminator column, because the declaration says the rows have no owner" do
+      harness.apply_tenant_archetype!(:teams, :membership)
+      expect(sql).not_to include("ADD COLUMN")
+    end
+
+    # FR-010 in the direction that used to be impossible: pruning knew only the gem's own
+    # names, so a host archetype's policies survived every switch away from it.
+    it "has its policies pruned when the table moves to a built-in archetype" do
+      allow(harness).to receive(:policy_names).and_return(%w[widgets_membership_select widgets_tenant_all])
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).to include(%(DROP POLICY IF EXISTS "widgets_membership_select"))
+    end
+
+    it "prunes a built-in archetype's policies when a table moves to it" do
+      allow(harness).to receive(:policy_names).and_return(%w[teams_tenant_all teams_membership_select])
+      harness.apply_tenant_archetype!(:teams, :membership)
+      expect(sql).to include(%(DROP POLICY IF EXISTS "teams_tenant_all"))
+    end
+
+    it "still leaves alone a policy no archetype declares" do
+      allow(harness).to receive(:policy_names).and_return(%w[teams_membership_select teams_super_admin_all])
+      harness.apply_tenant_archetype!(:teams, :membership)
+      expect(sql).not_to include("teams_super_admin_all")
+    end
+
+    # FR-008. Dispatching by method name answered this with NoMethodError, which names the
+    # method the gem happens to use rather than the archetype the caller asked for.
+    it "raises for a name nobody registered, listing what is registered" do
+      expect { harness.apply_tenant_archetype!(:teams, :nonesuch) }
+        .to raise_error(PgTenantRls::Error, /unknown archetype :nonesuch.*registered:.*membership/m)
+    end
+
+    it "raises for an option the archetype never declared, rather than dropping it" do
+      expect { harness.apply_tenant_archetype!(:teams, :membership, published_column: :live) }
+        .to raise_error(PgTenantRls::Error, /takes no option :published_column/)
+    end
+  end
+
+  # The facts that used to live with the caller, as four lists it had to keep in step.
+  describe "the discriminator column an archetype declares it needs" do
+    it "is added when the archetype wants one and the table has none" do
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).to include(%(ADD COLUMN IF NOT EXISTS "tenant_id" bigint))
+      expect(sql).to include("NOT NULL")
+    end
+
+    it "admits null where the archetype's own predicate reads rows belonging to nobody" do
+      harness.apply_tenant_archetype!(:widgets, :shared_default)
+      expect(sql).to include(%(ADD COLUMN IF NOT EXISTS "tenant_id" bigint))
+      expect(sql).not_to include("NOT NULL")
+    end
+
+    # ADD COLUMN IF NOT EXISTS would be correct and still wrong: ALTER TABLE takes an
+    # ACCESS EXCLUSIVE lock whether or not it has anything to do, and this runs for every
+    # table on every reconcile.
+    it "is not touched when the table already carries it" do
+      allow(harness).to receive(:column_present?).and_return(true)
+      harness.apply_tenant_archetype!(:widgets, :tenant)
+      expect(sql).not_to include("ADD COLUMN")
+    end
+
+    it "is never asked for by an archetype whose rows belong to nobody" do
+      harness.apply_tenant_archetype!(:manuals, :reference, writable_when: "app_is_admin()")
+      expect(sql).not_to include("ADD COLUMN")
     end
   end
 
