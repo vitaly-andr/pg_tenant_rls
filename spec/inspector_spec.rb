@@ -181,7 +181,8 @@ RSpec.describe PgTenantRls::Inspector do
       report = described_class.verify!(nil, manifest: { widgets: :tenant })
 
       expect(report.clean?).to be(true)
-      expect(report.checked).to include("table widgets (tenant)")
+      expect(report.checked.map(&:key)).to eq([:table])
+      expect(report.checked.map(&:subject)).to eq(["widgets"])
     end
 
     it "reports a table named in the manifest but absent from the database" do
@@ -200,12 +201,22 @@ RSpec.describe PgTenantRls::Inspector do
         .to raise_error(PgTenantRls::Error, /examined nothing/)
     end
 
+    # Reported by a consumer an hour after the Report shipped: given coverage to assert on,
+    # the only assertable value was an English sentence, so their spec pinned start_with
+    # ("role:"). A message must stay free to improve; the key is what a caller decides on.
+    it "identifies a skipped question by key, not by the wording of its message" do
+      allow(described_class).to receive(:call).and_return([table])
+      skipped = described_class.audit(nil, manifest: { widgets: :tenant }).skipped
+
+      expect(skipped.map(&:key)).to contain_exactly(:perimeter, :role)
+      expect(skipped.find { |entry| entry.key == :role }.to_s).to include("runtime_role")
+    end
+
     it "says which questions it did not ask, and why" do
       allow(described_class).to receive(:call).and_return([table])
       report = described_class.audit(nil, manifest: { widgets: :tenant })
 
-      expect(report.skipped).to include(a_string_matching(/perimeter: no prefixes given/))
-      expect(report.skipped).to include(a_string_matching(/config\.runtime_role is not set/))
+      expect(report.skipped.map(&:key)).to contain_exactly(:perimeter, :role)
     end
 
     it "counts the perimeter sweep as coverage even when the manifest is empty" do
@@ -213,7 +224,8 @@ RSpec.describe PgTenantRls::Inspector do
       report = described_class.audit(nil, manifest: {}, prefixes: ["shop_"])
 
       expect(report.nothing_checked?).to be(false)
-      expect(report.checked).to include("perimeter shop_")
+      expect(report.checked.map(&:key)).to eq([:perimeter])
+      expect(report.checked.first.subject).to eq("shop_")
     end
   end
 

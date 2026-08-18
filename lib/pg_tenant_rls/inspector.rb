@@ -58,6 +58,13 @@ module PgTenantRls
                    membership_audit(connection, role))
     end
 
+    # A question the audit did not ask. Not a problem — a perimeter sweep needs prefixes and a
+    # membership check needs a role, and a caller supplying neither has opted out. What it
+    # must not be is invisible.
+    def declined(key, reason)
+      { problems: [], checked: [], skipped: [Entry.new(key: key, message: reason)] }
+    end
+
     def merge_audits(*parts)
       Report.new(**%i[problems checked skipped].to_h { |key| [key, parts.flat_map { |part| part[key] }] })
     end
@@ -85,7 +92,8 @@ module PgTenantRls
         found = seen[table.to_s]
         next ["#{table}: table not found"] if found.nil?
 
-        checked << "table #{table} (#{archetype})"
+        checked << Entry.new(key: :table, subject: table.to_s,
+                             message: "table #{table} (#{archetype})")
         problems(found, archetype.to_sym)
       end
       { problems: problems, checked: checked, skipped: [] }
@@ -96,23 +104,25 @@ module PgTenantRls
     # whether it is isolated.
     def perimeter_audit(connection, manifest, prefixes, discriminator)
       if prefixes.nil? || prefixes.empty?
-        return { problems: [], checked: [],
-                 skipped: ["perimeter: no prefixes given, tables outside the manifest were not examined"] }
+        return declined(:perimeter,
+                        "perimeter: no prefixes given, tables outside the manifest were not examined")
       end
 
       declared = manifest.keys.map(&:to_s)
       found = call(connection, prefixes: prefixes, discriminator: discriminator).map { |t| t[:table] }
       { problems: (found - declared).map { |t| "#{t}: in the perimeter but absent from the manifest" },
-        checked: ["perimeter #{prefixes.join(", ")}"], skipped: [] }
+        checked: [Entry.new(key: :perimeter, subject: prefixes.join(", "),
+                            message: "perimeter #{prefixes.join(", ")}")], skipped: [] }
     end
 
     def membership_audit(connection, role)
       if role.nil?
-        return { problems: [], checked: [],
-                 skipped: ["role: config.runtime_role is not set, privileged memberships were not examined"] }
+        return declined(:role,
+                        "role: config.runtime_role is not set, privileged memberships were not examined")
       end
 
-      { problems: membership_problems(connection, role), checked: ["role #{role}"], skipped: [] }
+      { problems: membership_problems(connection, role), skipped: [],
+        checked: [Entry.new(key: :role, subject: role.to_s, message: "role #{role}")] }
     end
 
     def describe(row, policies, columns, unkeyed, discriminator)

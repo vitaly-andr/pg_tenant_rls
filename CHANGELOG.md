@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-18
+
+### Fixed
+
+- `Report#checked` and `Report#skipped` hold `Inspector::Entry` values (`key`, `subject`,
+  `message`) instead of plain strings. 0.6.0 gave callers coverage to assert on and then made
+  the only assertable value an English sentence — a consumer had to write
+  `start_with("role:")` within the hour. A message is written for a person and has to stay
+  free to improve; a spec pinned to its first word turns every rewording into a breakage.
+  `skipped.map(&:key)` is now `[:role]`, and the wording is nobody's contract.
+
+  `Entry#to_s` returns the message, so anything printing the entries is unaffected.
+
+  `problems` stay plain strings: their content varies with what was wrong, and the decision a
+  caller makes on them is "is this empty".
+
 ## [0.6.0] - 2026-08-18
 
 ### Breaking
