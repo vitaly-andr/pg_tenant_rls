@@ -74,7 +74,7 @@ RSpec.describe PgTenantRls::Inspector do
       end
       found = described_class.problems(table(policies: swapped), :tenant)
       expect(found).to include(a_string_matching(/missing policies widgets_tenant_all/))
-      expect(found).to include(a_string_matching(/unexpected policies widgets_catalog_select/))
+      expect(found).to include(a_string_matching(/another archetype: widgets_catalog_select \(public_catalog\)/))
     end
 
     it "accepts the same policies when the manifest declares public_catalog" do
@@ -82,6 +82,81 @@ RSpec.describe PgTenantRls::Inspector do
         { name: "widgets_#{suffix}", command: "ALL", permissive: true, roles: ["public"] }
       end
       expect(described_class.problems(table(policies: swapped), :public_catalog)).to be_empty
+    end
+  end
+
+  # FR-009. Both used to be reported as "unexpected policies", and the two are not the same
+  # finding: one says a switch did not finish, the other says something is being enforced
+  # that no declaration accounts for.
+  describe "a policy that is not part of the declared archetype" do
+    def with_policies(*names)
+      described_class.problems(
+        table(policies: names.map { |n| { name: n, command: "ALL", permissive: true, roles: ["public"] } }),
+        :tenant
+      )
+    end
+
+    it "is attributed to the archetype that declares it, when one does" do
+      expect(with_policies("widgets_tenant_all", "widgets_shared_select"))
+        .to include(a_string_matching(/another archetype: widgets_shared_select \(shared_default\)/))
+    end
+
+    it "is reported as belonging to no archetype otherwise" do
+      expect(with_policies("widgets_tenant_all", "widgets_super_admin_all"))
+        .to include(a_string_matching(/no registered archetype: widgets_super_admin_all/))
+    end
+
+    it "keeps the two apart when a table carries both" do
+      found = with_policies("widgets_tenant_all", "widgets_shared_select", "widgets_super_admin_all")
+      expect(found).to include(a_string_matching(/another archetype: widgets_shared_select/))
+      expect(found).to include(a_string_matching(/no registered archetype: widgets_super_admin_all/))
+    end
+
+    it "attributes a host-registered archetype's policy just as readily" do
+      PgTenantRls.register_archetype(:membership) do |a|
+        a.discriminator false
+        a.policy :membership_select, command: "SELECT", using: "id IN (SELECT portal_team_ids())"
+      end
+
+      expect(with_policies("widgets_tenant_all", "widgets_membership_select"))
+        .to include(a_string_matching(/another archetype: widgets_membership_select \(membership\)/))
+    ensure
+      PgTenantRls::Archetypes.reset!
+    end
+  end
+
+  # FR-011. The question asked when there is no manifest yet: an existing schema has to be
+  # inventoried before it can be declared.
+  describe ".identify" do
+    def identify(*names)
+      policies = names.map { |n| { name: n, command: "ALL", permissive: true, roles: ["public"] } }
+      allow(described_class).to receive(:call).and_return([table(policies: policies)])
+      described_class.identify(nil, :widgets)
+    end
+
+    it "names the archetype a table's policies correspond to" do
+      expect(identify("widgets_tenant_all")).to eq(:tenant)
+      expect(identify(*%w[widgets_catalog_select widgets_catalog_insert
+                          widgets_catalog_update widgets_catalog_delete])).to eq(:public_catalog)
+    end
+
+    # An override is layered on top of an archetype by design, so counting it against the
+    # match would make every table the portal touches unidentifiable.
+    it "ignores a policy no archetype declares" do
+      expect(identify("widgets_tenant_all", "widgets_super_admin_all")).to eq(:tenant)
+    end
+
+    it "names none when the table carries the leftovers of two archetypes" do
+      expect(identify("widgets_tenant_all", "widgets_shared_select")).to be_nil
+    end
+
+    it "names none for a table under no archetype at all" do
+      expect(identify("widgets_super_admin_all")).to be_nil
+    end
+
+    it "names none rather than raising for a table that does not exist" do
+      allow(described_class).to receive(:call).and_return([])
+      expect(described_class.identify(nil, :missing)).to be_nil
     end
   end
 

@@ -346,6 +346,35 @@ RSpec.describe "tenant isolation", :database do
     it "is verified against a manifest like any archetype the gem ships" do
       expect(PgTenantRls::Inspector.verify!(owner, manifest: { notes: :authored })).to be(true)
     end
+
+    it "names the policy when one is dropped outside the gem" do
+      owner.execute("DROP POLICY notes_authored_insert ON notes")
+      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }))
+        .to include(a_string_matching(/missing policies notes_authored_insert/))
+    end
+
+    # The two verdicts that used to read as one line, told apart against a real catalogue.
+    it "reports a policy added outside the gem as belonging to no archetype" do
+      owner.execute("CREATE POLICY notes_hotfix ON notes FOR SELECT USING (true)")
+      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }))
+        .to include(a_string_matching(/no registered archetype: notes_hotfix/))
+    end
+
+    it "attributes a leftover of another archetype to the archetype that declares it" do
+      owner.execute("CREATE POLICY notes_tenant_all ON notes FOR ALL USING (true)")
+      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }))
+        .to include(a_string_matching(/another archetype: notes_tenant_all \(tenant\)/))
+    end
+
+    # The reverse of verify!, and the question asked when there is no manifest yet.
+    it "is identifiable from the catalogue alone, with no manifest at all" do
+      expect(PgTenantRls::Inspector.identify(owner, :notes)).to eq(:authored)
+    end
+
+    it "identifies as nothing once a second archetype's policy is left on the table" do
+      owner.execute("CREATE POLICY notes_tenant_all ON notes FOR ALL USING (true)")
+      expect(PgTenantRls::Inspector.identify(owner, :notes)).to be_nil
+    end
   end
 
   describe "#create_tenant_function! — the GUC name out of the schema" do

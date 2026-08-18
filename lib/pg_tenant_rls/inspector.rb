@@ -86,6 +86,16 @@ module PgTenantRls
     # terms as one the gem ships. Fetching also settles the unknown-archetype case: a
     # manifest naming something nobody registered is a mistake in the manifest, and saying
     # so beats reporting every policy on the table as unexpected.
+    # Which registered archetype a table's policies correspond to, or nil when they
+    # correspond to none. The reverse of verify!, and the question asked when there is no
+    # manifest yet: an existing schema is inventoried before it can be declared.
+    def identify(connection, table, discriminator: PgTenantRls.config.discriminator)
+      state = call(connection, tables: [table.to_s], discriminator: discriminator).first
+      return nil if state.nil?
+
+      Archetypes.identify(state[:table], state[:policies].map { |policy| policy[:name] })
+    end
+
     def problems(state, archetype)
       declared = Archetypes.fetch(archetype)
       found = []
@@ -132,12 +142,27 @@ module PgTenantRls
     end
 
     def set_problems(table, expected, actual)
-      found = []
       missing = expected - actual
-      extra = actual - expected
+      found = []
       found << "#{table}: missing policies #{missing.join(", ")}" unless missing.empty?
-      found << "#{table}: unexpected policies #{extra.join(", ")}" unless extra.empty?
+      found + extra_problems(table, actual - expected)
+    end
+
+    # Two different failures that used to read as one line. A policy belonging to another
+    # registered archetype is a switch that did not finish — the table is under two
+    # archetypes at once, combining with OR. A policy belonging to no archetype at all is
+    # something being enforced that no declaration accounts for, and it may equally be a
+    # host override that is entirely intentional; either way it is not the same finding.
+    def extra_problems(table, extra)
+      foreign, unrecognised = extra.partition { |name| Archetypes.owner_of(table, name) }
+      found = []
+      found << "#{table}: policies of another archetype: #{attributed(table, foreign)}" unless foreign.empty?
+      found << "#{table}: policies of no registered archetype: #{unrecognised.join(", ")}" unless unrecognised.empty?
       found
+    end
+
+    def attributed(table, names)
+      names.map { |name| "#{name} (#{Archetypes.owner_of(table, name).name})" }.join(", ")
     end
 
     # Restrictive policies combine with AND, so a single one silently narrows every

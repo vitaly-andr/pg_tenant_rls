@@ -56,6 +56,31 @@ module PgTenantRls
       registry.each_value.flat_map { |archetype| archetype.policy_names(table) }
     end
 
+    # Which archetype declares this policy name for this table, or nil when none does.
+    #
+    # This is the difference between "a policy from a different archetype is on the table"
+    # and "a policy nobody's registry knows about is on the table". The first says the table
+    # was switched and something was left behind; the second says a policy is being enforced
+    # that no declaration accounts for. Reported as one verdict, they read the same, and the
+    # second is the one worth waking up for.
+    def owner_of(table, policy_name)
+      registry.each_value.find { |archetype| archetype.policy_names(table).include?(policy_name) }
+    end
+
+    # The archetype a table's policies correspond to, or nil.
+    #
+    # Policies no archetype declares — a host override, say — are ignored rather than
+    # counted against a match: they are layered on top of an archetype by design. What is
+    # compared is the set of policies some archetype does claim, and it has to match one
+    # archetype exactly. Leftovers of a half-finished switch therefore identify as nothing,
+    # which is the truthful answer: the table is under two archetypes at once.
+    def identify(table, policy_names)
+      claimed = policy_names.select { |name| owner_of(table, name) }.sort
+      return nil if claimed.empty?
+
+      registry.each_value.find { |archetype| archetype.policy_names(table).sort == claimed }&.name
+    end
+
     # Back to what the gem ships. For tests; not part of the contract — registration is
     # boot-time and additive, and there is no way to unregister one archetype.
     #
