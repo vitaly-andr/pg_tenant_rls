@@ -1,5 +1,41 @@
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-18
+
+### Added
+
+- `PgTenantRls::Inspector.privileged_memberships(connection, role)` — the roles carrying
+  `SUPERUSER` or `BYPASSRLS` that the given role can *become*. `audit` and `verify!` take an
+  optional `role:` (defaulting to `config.runtime_role`) and report each one.
+
+  Role attributes are not inherited through membership — measured: a member of a `BYPASSRLS`
+  role reads its rows under the policy, exactly as an unrelated role would, and `NOINHERIT`
+  changes nothing either way. What membership grants is `SET ROLE`, which needs no password
+  and takes one statement, and row security then consults the attributes of the role in
+  effect. So this is not a hole that is open; it is a hole that opens on request — the same
+  thing to an auditor, and a different thing to a reader of `pg_roles`.
+
+  The check uses `pg_has_role(..., 'MEMBER')` rather than a join on `pg_auth_members`,
+  because membership is transitive for `SET ROLE`: measured on a → b → c, `a` reaches `c`
+  while a direct-membership query shows `a` nothing at all.
+
+  **On upgrade**: `verify!` may start failing on a perimeter that passed before. If it names
+  a membership, the isolation there was resting on the application never issuing `SET ROLE`.
+
+- The finding is reported by inspection rather than refused at provisioning time, and the
+  reasoning is worth stating because the opposite looks safer: refusing turns a latent hole
+  into an outage at the worst possible moment, and does not close it either — an
+  administrator who needs the group removes the check, not the group. Reporting it through
+  `verify!` also keeps it current, which a one-time provisioning check cannot: a membership
+  added six months after setup is invisible to anything that ran once.
+
+### Changed
+
+- `Inspector.enforced_for_current_role?` is deliberately untouched and still answers only
+  what is true of the role in effect. Folding reachability into it would call a correctly
+  isolated session unenforced, in the first line of an isolation suite — the worst place for
+  a false alarm. The two questions now live in separate modules for the same reason.
+
 ## [0.4.0] - 2026-08-18
 
 A minor rather than a patch: the fix is small, but the new refusal below can stop a

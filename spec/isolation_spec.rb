@@ -559,6 +559,97 @@ RSpec.describe "tenant isolation", :database do
 
   # A role is a cluster object, so every example here works on a throwaway name and drops it
   # afterwards — the runtime role the rest of the suite depends on must not be touched.
+  # Membership is not an attribute and is not inherited — but it is a SET ROLE away, and
+  # SET ROLE needs no password. Every example works on throwaway roles and drops them.
+  describe "a runtime role that can become a privileged one" do
+    let(:app) { "tenant_rls_member_probe" }
+    let(:bypasser) { "tenant_rls_bypasser_probe" }
+    let(:middle) { "tenant_rls_middle_probe" }
+    let(:harmless) { "tenant_rls_group_probe" }
+
+    after do
+      [app, middle, harmless, bypasser].each { |r| owner.execute("DROP ROLE IF EXISTS #{r}") }
+    end
+
+    def memberships
+      PgTenantRls::Inspector.privileged_memberships(owner, app)
+    end
+
+    it "finds nothing for a role that belongs to nothing" do
+      owner.execute("CREATE ROLE #{app} LOGIN PASSWORD 'p'")
+
+      expect(memberships).to be_empty
+    end
+
+    it "finds a BYPASSRLS role it is a direct member of" do
+      owner.execute("CREATE ROLE #{bypasser} NOLOGIN BYPASSRLS")
+      owner.execute("CREATE ROLE #{app} LOGIN PASSWORD 'p' IN ROLE #{bypasser}")
+
+      expect(memberships).to eq([bypasser])
+    end
+
+    # The case a join on pg_auth_members misses entirely: membership is transitive for
+    # SET ROLE, so a → middle → bypasser reaches bypasser while the direct query shows
+    # nothing at all. Measured before this was written, not assumed.
+    it "finds one reached through a chain, which direct membership does not show" do
+      owner.execute("CREATE ROLE #{bypasser} NOLOGIN BYPASSRLS")
+      owner.execute("CREATE ROLE #{middle} NOLOGIN IN ROLE #{bypasser}")
+      owner.execute("CREATE ROLE #{app} LOGIN PASSWORD 'p' IN ROLE #{middle}")
+
+      direct = owner.select_values(
+        "SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid " \
+        "WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = '#{app}') " \
+        "AND (r.rolsuper OR r.rolbypassrls)"
+      )
+      expect(direct).to be_empty
+      expect(memberships).to eq([bypasser])
+    end
+
+    it "finds a superuser just as readily" do
+      owner.execute("CREATE ROLE #{bypasser} NOLOGIN SUPERUSER")
+      owner.execute("CREATE ROLE #{app} LOGIN PASSWORD 'p' IN ROLE #{bypasser}")
+
+      expect(memberships).to eq([bypasser])
+    end
+
+    # A group role is the ordinary reason to hold membership. Reporting those would drown
+    # the finding that matters.
+    it "says nothing about membership in a group that is not privileged" do
+      owner.execute("CREATE ROLE #{harmless} NOLOGIN")
+      owner.execute("CREATE ROLE #{app} LOGIN PASSWORD 'p' IN ROLE #{harmless}")
+
+      expect(memberships).to be_empty
+    end
+
+    it "asks nothing at all when no role is configured" do
+      expect(PgTenantRls::Inspector.privileged_memberships(owner, nil)).to eq([])
+    end
+
+    # "The role is not there yet" is an ordinary state during provisioning, and pg_has_role
+    # raises on a name that does not exist.
+    it "does not raise for a role that does not exist" do
+      expect { PgTenantRls::Inspector.privileged_memberships(owner, "no_such_role_here") }
+        .not_to raise_error
+    end
+
+    it "reaches the deploy check, which is what keeps the finding current" do
+      owner.execute("CREATE ROLE #{bypasser} NOLOGIN BYPASSRLS")
+      owner.execute("CREATE ROLE #{app} LOGIN PASSWORD 'p' IN ROLE #{bypasser}")
+
+      expect(PgTenantRls::Inspector.audit(owner, manifest: {}, role: app))
+        .to include(a_string_matching(/may SET ROLE #{bypasser}, which bypasses every policy/))
+    end
+
+    # The reason this is a separate question rather than folded into the existing one: under
+    # membership the policies DO apply, and saying otherwise would fire a false alarm in the
+    # first line of an isolation suite.
+    it "leaves enforced_for_current_role? telling the truth about the present" do
+      expect(PgTenantRls::Inspector.enforced_for_current_role?(runtime)).to be(true)
+      expect(PgTenantRls::Inspector.privileged_memberships(owner, TestDatabase::RUNTIME_ROLE))
+        .to be_empty
+    end
+  end
+
   describe "PgTenantRls::RoleProvisioner.create_role!" do
     let(:role) { "tenant_rls_rotation_probe" }
 
