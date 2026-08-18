@@ -1,5 +1,67 @@
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-18
+
+### Added
+
+- `PgTenantRls.register_archetype(name) { |a| ... }` — declare an access archetype of your own.
+  It is thereafter usable everywhere a built-in one is: applied, re-applied, pruned when a table
+  changes archetype, and verified against a manifest. The expressions are written to the database
+  unchanged; the gem does not parse, validate or rewrite them and never learns what a host
+  function means. Until now a host with an access pattern of its own could only reimplement the
+  mechanics beside the gem, and one consumer did — its `public_read` now means something this
+  gem's does not.
+- `a.discriminator false` / `a.discriminator true, nullable: true` in a registration — whether
+  tables under the archetype carry the discriminator column and whether it admits null. These
+  facts sat with the caller as one list per property; one consumer kept four of them and a fifth
+  copy of the archetype list beside them, and the copy drifted through a single added archetype
+  and took 197 of its examples down.
+- `a.policy name: "existing_policy_name"` — an archetype can adopt policy names a schema already
+  carries instead of requiring live objects to be renamed.
+- `PgTenantRls::Inspector.identify(connection, table)` — which registered archetype a table's
+  policies correspond to, or `nil`. The question asked when there is no manifest yet and an
+  existing schema has to be inventoried. Policies no archetype claims are ignored rather than
+  counted against the match, since an override is layered on top of an archetype by design.
+- Specs for `PgTenantRls::Context`, which had none: nesting, restoring a context the caller set
+  itself, the swap guard, and the aborted-transaction case below.
+
+### Changed
+
+- Inspection now distinguishes a policy belonging to **another registered archetype** from one
+  belonging to **no** registered archetype. Both used to be reported as "unexpected policies",
+  and they call for different answers: the first is a switch that did not finish, leaving the
+  table under two archetypes at once combining with `OR`; the second is something enforced that
+  no declaration accounts for, which may equally be a deliberate host override. Foreign policies
+  are named with the archetype that claims them.
+- The archetype list is no longer a constant. `Archetypes::POLICIES` and `Archetypes::METHODS`
+  are replaced by a registry, and the archetypes this gem ships are registrations it makes for
+  itself — the same door a host uses, so the mechanism cannot drift from the archetypes it was
+  built for. Every `create_*_policy!` keeps its name, signature and behaviour.
+- `apply_tenant_archetype!` adds the discriminator column when the archetype declares one and the
+  table does not have it, the catalog being asked first so that a table already carrying it sees
+  no statement at all. `ALTER TABLE` takes an `ACCESS EXCLUSIVE` lock whether or not it has
+  anything to do, and this runs for every table on every reconcile.
+- Applying or verifying an unregistered archetype raises naming the archetype and listing what is
+  registered, rather than failing with a missing-method error naming an internal method.
+
+### Fixed
+
+- Redeclaring a permissive policy as restrictive altered it in place and left it combining with
+  `OR` — widening access where the redeclaration asked to narrow it. `ALTER POLICY` can change
+  neither the command nor the permissiveness ("the policy must be dropped and recreated"), and
+  the rewrite compared only the command, because permissiveness was not something an archetype
+  could state. It compares both now.
+- `Inspector` demanded a discriminator column of every table, so a shared catalogue owned by
+  nobody — the `reference` archetype, whose rows have no owner by design — was reported broken
+  for being built exactly as declared. The expectation now comes from the archetype.
+- A database error inside `Context.with_tenant` reached the caller as
+  `PG::InFailedSqlTransaction` instead of the error that caused it. The restore in `ensure` ran a
+  statement on a connection whose transaction had already failed, and raised from an `ensure`
+  that failure replaces the exception on its way out — so the caller was told the transaction was
+  aborted and never which write aborted it. The restore is skipped when the transaction has
+  failed; `set_config(..., true)` is undone by the rollback that must follow anyway. Reported
+  from a consumer, where a composite foreign key violation arrived unrecognizable.
+
 ## [0.2.0] - 2026-08-14
 
 ### Breaking

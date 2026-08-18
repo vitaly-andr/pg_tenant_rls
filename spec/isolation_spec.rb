@@ -267,6 +267,28 @@ RSpec.describe "tenant isolation", :database do
       first_write = statements.index { |s| s.match?(/\A(CREATE|ALTER) POLICY/) }
       expect(first_write).to be < first_drop
     end
+
+    # US3: the ordering is a property of the one mechanical backend, so an archetype
+    # nobody in this gem has heard of inherits it rather than approximating it. The end
+    # state is identical either way — only the order tells a safe switch from a window.
+    it "keeps that order for a host-registered archetype too" do
+      PgTenantRls.register_archetype(:audited) do |a|
+        a.discriminator false
+        a.policy :audited_select, command: "SELECT", using: "true"
+      end
+      migration.apply_tenant_archetype!(:switched, :tenant)
+
+      statements = []
+      recorder = TestDatabase::Runner.new(owner)
+      recorder.define_singleton_method(:execute) { |sql| statements << sql }
+      recorder.apply_tenant_archetype!(:switched, :audited)
+
+      first_drop = statements.index { |s| s.start_with?("DROP POLICY") }
+      first_write = statements.index { |s| s.match?(/\A(CREATE|ALTER) POLICY/) }
+      expect(first_write).to be < first_drop
+    ensure
+      PgTenantRls::Archetypes.reset!
+    end
   end
 
   # US1, proven where it counts. The gem contains no author_id, no app.current_author_id
@@ -399,6 +421,17 @@ RSpec.describe "tenant isolation", :database do
 
     it "composes, restoring the outer context rather than clearing it" do
       PgTenantRls::Context.with_tenant(7, connection: runtime) do
+        PgTenantRls::Context.with_tenant(7, connection: runtime) { nil }
+        expect(current_tenant).to eq("7")
+      end
+    end
+
+    # Reported from the academics engine: an around_action sets the context, a spec opens the
+    # transaction, and with_tenant runs inside both. Leaving the inner block must put back
+    # what the outer scope set — restoring "nothing" would blind every query after it.
+    it "restores a context the caller set itself, not only one it opened" do
+      runtime.transaction do
+        runtime.execute("SELECT set_config('app.current_tenant_id', '7', true)")
         PgTenantRls::Context.with_tenant(7, connection: runtime) { nil }
         expect(current_tenant).to eq("7")
       end

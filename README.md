@@ -94,12 +94,63 @@ create_gated_read_policy! :products, gate: { table: :publications, fk: :product_
 
 # No tenant context → every row (a public storefront); with one → own rows only:
 create_public_catalog_policy! :products
+
+# Everyone reads, only an administrator writes — a shared catalogue owned by nobody:
+create_reference_policy! :unit_of_measures, writable_when: "current_setting('app.is_admin', true) = 'on'"
 ```
 
 Mind how each one fails when the tenant context is missing. `tenant`, `shared_default`,
 `public_read` and `gated_read` return zero rows — a loud failure. `public_catalog` returns
 **everything**, by design, because a storefront has to work without a tenant. That difference is
 why "the table has a policy" is not a check worth making.
+
+## Archetypes of your own
+
+The six above are registrations the gem makes for itself. Yours go into the same registry and
+behave identically — applied, re-applied, pruned when a table changes archetype, verified:
+
+```ruby
+# config/initializers/pg_tenant_rls.rb
+PgTenantRls.register_archetype(:membership) do |a|
+  a.discriminator false                     # these rows are not owned by one tenant
+
+  a.policy :membership_select, command: "SELECT",
+           using: "id IN (SELECT portal_current_user_team_ids())"
+
+  a.policy :membership_insert, command: "INSERT",
+           check: "owner_id = portal_current_user_id()"
+end
+
+apply_tenant_archetype! :portal_teams, :membership
+```
+
+The expressions are yours and are written to the database unchanged. The gem does not parse,
+validate or rewrite them, and never learns what `portal_current_user_team_ids()` means — that is
+the seam that keeps everything host-specific on your side of it.
+
+`a.discriminator false` says the rows have no owning tenant, so no discriminator column is
+expected or added. `a.discriminator true, nullable: true` says they have one that may be NULL —
+rows belonging to everybody, the way `shared_default` works. The archetype states this, rather
+than each caller remembering it per table, because the archetype's own predicates are what
+reference that column.
+
+To take responsibility for policies a schema already carries, name them outright instead of
+letting the `<table>_<suffix>` rule name them:
+
+```ruby
+a.policy name: "portal_stores_owner_insert", command: "INSERT", check: own
+```
+
+Registering the same definition twice is fine — initializers get re-run. Registering a
+**different** definition under a name already taken raises on the spot: two components
+disagreeing about what an archetype means will otherwise write policies one of them does not
+expect.
+
+Write archetypes this way rather than issuing `CREATE POLICY` beside the gem. The mechanics are
+easy to get subtly wrong and the failures are quiet ones: dropping a policy before recreating it
+opens a window in which the table returns zero rows to everyone; altering a policy whose command
+or permissiveness changed does nothing PostgreSQL will complain about; a policy the registry does
+not know is a policy inspection cannot check and pruning cannot clean up.
 
 ## Foreign keys
 
@@ -127,7 +178,24 @@ PgTenantRls::Inspector.verify!(connection, manifest: { crm_deals: :tenant, crm_p
 
 `call` reports RLS and FORCE flags, every policy with its command, permissiveness, roles and
 expressions, the discriminator column, and foreign keys that omit the discriminator. `verify!`
-checks that against a manifest you declare and raises on any mismatch.
+checks that against a manifest you declare and raises on any mismatch. Archetypes you registered
+yourself are first-class in a manifest; the expected set comes from the registry.
+
+A failure distinguishes three things, because they call for different answers: a declared policy
+that is missing, a policy belonging to a **different** registered archetype (a switch that did not
+finish — the table is under two archetypes at once, and permissive policies combine with `OR`),
+and a policy belonging to **no** registered archetype (something enforced that no declaration
+accounts for, which may equally be a deliberate host override).
+
+Going the other way, when there is no manifest yet and an existing schema has to be inventoried:
+
+```ruby
+PgTenantRls::Inspector.identify(connection, :crm_deals)  # => :tenant, or nil
+```
+
+Policies no archetype claims are ignored rather than counted against the match, since an override
+is layered on top of an archetype by design. A table carrying the leftovers of two archetypes
+identifies as `nil`, which is the truthful answer.
 
 Declare the perimeter — the gem will not guess it. It cannot recognize its own tables: a host
 writing the same predicate by hand produces a byte-identical `DEFAULT`, and a policy name is a
