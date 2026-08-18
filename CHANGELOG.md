@@ -62,6 +62,12 @@
   failed; `set_config(..., true)` is undone by the rollback that must follow anyway. Reported
   from a consumer, where a composite foreign key violation arrived unrecognizable.
 
+  Worth checking on upgrade: a spec naming the concrete error — `raise_error(
+  ActiveRecord::InvalidForeignKey)` — was failing and starts passing. One written as
+  `raise_error` with no argument, or against `ActiveRecord::StatementInvalid`, was passing all
+  along, because `InFailedSqlTransaction` satisfies both. That one was green while checking
+  nothing, and stays green now; it is the one to tighten.
+
 ## [0.2.0] - 2026-08-14
 
 ### Breaking
