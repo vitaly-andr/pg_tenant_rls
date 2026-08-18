@@ -77,7 +77,7 @@ module PgTenantRls
       # can see/manage their own not-yet-published rows). Writes stay owner-only, same shape
       # as public_read/public_catalog. Lets a synced catalog table (no `published` column of
       # its own — a re-sync would clobber one) gate visibility through an off-catalog register
-      # instead (e.g. kub_products <- kub_publications).
+      # instead (e.g. products <- publications).
       def gated_read_archetype
         owner_writes(Archetype.new(:gated_read).discriminator(true, nullable: true)
                               .option(:published_column, :published).option(:gate, required: true),
@@ -152,7 +152,7 @@ module PgTenantRls
                                                      published_column: published_column)
     end
 
-    #   create_gated_read_policy!(:kub_products, gate: { table: "kub_publications", fk: "kub_product_id" })
+    #   create_gated_read_policy!(:products, gate: { table: "publications", fk: "product_id" })
     def create_gated_read_policy!(table, gate:, published_column: :published,
                                   column: PgTenantRls.config.discriminator,
                                   role: PgTenantRls.config.policy_role)

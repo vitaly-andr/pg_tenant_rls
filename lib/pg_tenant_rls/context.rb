@@ -54,9 +54,9 @@ module PgTenantRls
     # PostgreSQL refuses every statement on a connection whose transaction is in an error
     # state, so the restore raises InFailedSqlTransaction; raised from an `ensure`, that
     # error replaces the one on its way out, and the caller is told "the transaction is
-    # aborted" instead of which constraint aborted it. Reported from the academics engine,
-    # where a composite foreign key violation arrived as a transaction-state error and the
-    # actual cause was invisible.
+    # aborted" instead of which constraint aborted it. Reported from a consumer, where a
+    # composite foreign key violation arrived as a transaction-state error and the actual
+    # cause was invisible.
     #
     # Skipping the restore loses nothing: set_config(..., true) is undone by the rollback
     # of the transaction or subtransaction it ran in, and an aborted transaction has no

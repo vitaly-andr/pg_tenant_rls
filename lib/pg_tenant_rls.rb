@@ -34,7 +34,7 @@ module PgTenantRls
     #   PgTenantRls.register_archetype(:membership) do |a|
     #     a.discriminator false
     #     a.policy :membership_select, command: "SELECT",
-    #              using: "id IN (SELECT portal_current_user_team_ids())"
+    #              using: "id IN (SELECT current_user_team_ids())"
     #   end
     #
     # The expressions are yours and are written verbatim; the gem never parses them and never

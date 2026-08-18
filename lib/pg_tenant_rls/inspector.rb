@@ -27,7 +27,7 @@ module PgTenantRls
     # Full picture for every table in the perimeter. Pass tables: for an explicit list or
     # prefixes: for name prefixes — take those from Module.table_name_prefix, never a
     # literal: isolate_namespace rewrites an engine's prefix to include the host's own
-    # once ActiveRecord loads, so a hardcoded "crm_" silently matches nothing.
+    # once ActiveRecord loads, so a hardcoded prefix silently matches nothing.
     def call(connection, tables: nil, prefixes: nil, discriminator: PgTenantRls.config.discriminator)
       policies = Catalog.policies_by_relation(connection)
       columns = Catalog.discriminator_by_relation(connection, discriminator)

@@ -115,17 +115,17 @@ PgTenantRls.register_archetype(:membership) do |a|
   a.discriminator false                     # these rows are not owned by one tenant
 
   a.policy :membership_select, command: "SELECT",
-           using: "id IN (SELECT portal_current_user_team_ids())"
+           using: "id IN (SELECT current_user_team_ids())"
 
   a.policy :membership_insert, command: "INSERT",
-           check: "owner_id = portal_current_user_id()"
+           check: "owner_id = current_user_id()"
 end
 
-apply_tenant_archetype! :portal_teams, :membership
+apply_tenant_archetype! :teams, :membership
 ```
 
 The expressions are yours and are written to the database unchanged. The gem does not parse,
-validate or rewrite them, and never learns what `portal_current_user_team_ids()` means — that is
+validate or rewrite them, and never learns what `current_user_team_ids()` means — that is
 the seam that keeps everything host-specific on your side of it.
 
 `a.discriminator false` says the rows have no owning tenant, so no discriminator column is
@@ -138,7 +138,7 @@ To take responsibility for policies a schema already carries, name them outright
 letting the `<table>_<suffix>` rule name them:
 
 ```ruby
-a.policy name: "portal_stores_owner_insert", command: "INSERT", check: own
+a.policy name: "stores_owner_insert", command: "INSERT", check: own
 ```
 
 Registering the same definition twice is fine — initializers get re-run. Registering a
@@ -172,8 +172,8 @@ public/gated archetypes reference other tenants on purpose.
 ## Checking what the database actually holds
 
 ```ruby
-PgTenantRls::Inspector.call(connection, prefixes: [Crm.table_name_prefix])
-PgTenantRls::Inspector.verify!(connection, manifest: { crm_deals: :tenant, crm_products: :public_catalog })
+PgTenantRls::Inspector.call(connection, prefixes: [MyEngine.table_name_prefix])
+PgTenantRls::Inspector.verify!(connection, manifest: { deals: :tenant, products: :public_catalog })
 ```
 
 `call` reports RLS and FORCE flags, every policy with its command, permissiveness, roles and
@@ -190,7 +190,7 @@ accounts for, which may equally be a deliberate host override).
 Going the other way, when there is no manifest yet and an existing schema has to be inventoried:
 
 ```ruby
-PgTenantRls::Inspector.identify(connection, :crm_deals)  # => :tenant, or nil
+PgTenantRls::Inspector.identify(connection, :deals)      # => :tenant, or nil
 ```
 
 Policies no archetype claims are ignored rather than counted against the match, since an override
@@ -202,7 +202,7 @@ writing the same predicate by hand produces a byte-identical `DEFAULT`, and a po
 hint rather than metadata, since the name survives while its predicate changes. When you pass
 `prefixes:`, take them from `Module.table_name_prefix` rather than a literal — `isolate_namespace`
 rewrites an engine's prefix to include the host's own once ActiveRecord loads, so a hardcoded
-`"crm_"` can silently match nothing.
+`"shop_"` can silently match nothing.
 
 ## Setting the tenant at runtime
 
