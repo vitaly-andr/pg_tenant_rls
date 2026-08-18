@@ -377,6 +377,63 @@ RSpec.describe "tenant isolation", :database do
     end
   end
 
+  # The module that decides which tenant every query sees, and it had no coverage at all.
+  describe "PgTenantRls::Context against a live connection" do
+    before do
+      TestDatabase.reset_table!("guarded", "name text")
+      migration.add_tenant_column!(:guarded)
+      migration.enable_tenant_rls!(:guarded)
+      migration.create_tenant_policy!(:guarded)
+    end
+
+    def current_tenant
+      runtime.select_value("SELECT current_setting('app.current_tenant_id', true)")
+    end
+
+    it "sets the tenant for the block and puts the previous value back after it" do
+      PgTenantRls::Context.with_tenant(7, connection: runtime) do
+        expect(current_tenant).to eq("7")
+      end
+      expect(current_tenant.to_s).to be_empty
+    end
+
+    it "composes, restoring the outer context rather than clearing it" do
+      PgTenantRls::Context.with_tenant(7, connection: runtime) do
+        PgTenantRls::Context.with_tenant(7, connection: runtime) { nil }
+        expect(current_tenant).to eq("7")
+      end
+    end
+
+    it "refuses to swap to a different tenant inside an active context" do
+      PgTenantRls::Context.with_tenant(7, connection: runtime) do
+        expect { PgTenantRls::Context.with_tenant(8, connection: runtime) { nil } }
+          .to raise_error(PgTenantRls::Context::SwapError, /7 -> 8/)
+      end
+    end
+
+    # Reported from the academics engine. The restore in `ensure` ran a statement on a
+    # connection whose transaction had already failed; PostgreSQL refuses those, so the
+    # caller was told the transaction was aborted and never which write aborted it.
+    it "surfaces the database's own error, not the failure of restoring the context" do
+      expect do
+        PgTenantRls::Context.with_tenant(1, connection: runtime) do
+          runtime.execute("INSERT INTO guarded (name, tenant_id) VALUES ('x', 2)")
+        end
+      end.to raise_error(ActiveRecord::StatementInvalid, /row-level security/)
+    end
+
+    it "leaves no context behind after that error, the rollback having undone it" do
+      begin
+        PgTenantRls::Context.with_tenant(1, connection: runtime) do
+          runtime.execute("INSERT INTO guarded (name, tenant_id) VALUES ('x', 2)")
+        end
+      rescue ActiveRecord::StatementInvalid
+        nil
+      end
+      expect(current_tenant.to_s).to be_empty
+    end
+  end
+
   describe "#create_tenant_function! — the GUC name out of the schema" do
     after { PgTenantRls.config.tenant_function = nil }
 

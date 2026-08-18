@@ -10,6 +10,11 @@ module PgTenantRls
     # zero rows).
     class SwapError < PgTenantRls::Error; end
 
+    # PQTRANS_INERROR. Written out rather than referenced through PG::Connection because
+    # the pg gem is not a dependency of this one: the only runtime dependency is
+    # ActiveRecord, and which driver sits underneath it is the host's business.
+    PG_TRANSACTION_IN_ERROR = 3
+
     # Wrap a block in a tenant context.
     #   PgTenantRls::Context.with_tenant(5) { ... }
     #   PgTenantRls::Context.with_tenant(5, "app.current_user_id" => 3) { ... }
@@ -39,8 +44,37 @@ module PgTenantRls
       begin
         yield
       ensure
-        apply(conn, previous)
+        restore(conn, previous)
       end
+    end
+
+    # Put the previous values back — unless the transaction has already failed, in which
+    # case there is nothing to put back and no way to do it.
+    #
+    # PostgreSQL refuses every statement on a connection whose transaction is in an error
+    # state, so the restore raises InFailedSqlTransaction; raised from an `ensure`, that
+    # error replaces the one on its way out, and the caller is told "the transaction is
+    # aborted" instead of which constraint aborted it. Reported from the academics engine,
+    # where a composite foreign key violation arrived as a transaction-state error and the
+    # actual cause was invisible.
+    #
+    # Skipping the restore loses nothing: set_config(..., true) is undone by the rollback
+    # of the transaction or subtransaction it ran in, and an aborted transaction has no
+    # ending other than a rollback. The check is on the state rather than on whether an
+    # exception is in flight, because those are different questions — a block may unwind
+    # for reasons that leave the transaction perfectly usable, and it may also complete
+    # normally while an outer rescue is still holding an exception.
+    def self.restore(conn, previous)
+      return if transaction_failed?(conn)
+
+      apply(conn, previous)
+    end
+
+    def self.transaction_failed?(conn)
+      raw = conn.raw_connection
+      raw.respond_to?(:transaction_status) && raw.transaction_status == PG_TRANSACTION_IN_ERROR
+    rescue StandardError
+      false
     end
 
     def self.read(conn, guc_names)
@@ -75,6 +109,6 @@ module PgTenantRls
       ActiveRecord::Relation::QueryAttribute.new(nil, value, ActiveRecord::Type::String.new)
     end
 
-    private_class_method :scoped, :read, :apply, :guard_swap!, :bind
+    private_class_method :scoped, :read, :apply, :restore, :transaction_failed?, :guard_swap!, :bind
   end
 end
