@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [0.6.2] - 2026-08-18
+
+### Changed
+
+- `Report#nothing_checked?` and the skipped-perimeter message say plainly what they do not
+  cover. `false` means the audit ran, not that the perimeter is complete: a manifest built
+  from an application's own models misses whatever has no model — a join table, something a
+  migration created — and coverage is then happily non-empty while the forgotten table goes
+  unexamined.
+
+  `prefixes:` is the other half rather than extra strictness. Without a perimeter sweep a
+  manifest is checked against itself, and agrees. `audit` said so; `nothing_checked?` did
+  not, and a reader who only saw the second concluded they were covered.
+
 ## [0.6.1] - 2026-08-18
 
 ### Fixed

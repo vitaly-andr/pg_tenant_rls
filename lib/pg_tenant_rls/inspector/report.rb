@@ -37,6 +37,18 @@ module PgTenantRls
     Report = Struct.new(:problems, :checked, :skipped, keyword_init: true) do
       def clean? = problems.empty?
 
+      # Whether the audit looked at anything at all — NOT whether it looked at everything.
+      #
+      # The distinction matters because the second failure is the likelier one. A manifest
+      # built from an application's own models misses whatever has no model — a join table,
+      # something created by a migration — and then coverage is happily non-empty while the
+      # thing nobody remembered goes unexamined. `false` here means the check ran, not that
+      # the perimeter is complete.
+      #
+      # Completeness is what `prefixes:` buys, and it is the other half rather than extra
+      # strictness: without a perimeter sweep a manifest is checked against itself, and
+      # agrees. Raised by a consumer who had closed the gap and noticed the docs did not say
+      # so where a reader would look.
       def nothing_checked? = checked.empty?
 
       def to_s

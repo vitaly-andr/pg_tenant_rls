@@ -105,7 +105,8 @@ module PgTenantRls
     def perimeter_audit(connection, manifest, prefixes, discriminator)
       if prefixes.nil? || prefixes.empty?
         return declined(:perimeter,
-                        "perimeter: no prefixes given, tables outside the manifest were not examined")
+                        "perimeter: no prefixes given, so the manifest was checked against " \
+                        "itself — a table absent from it was not examined and cannot be missed")
       end
 
       declared = manifest.keys.map(&:to_s)
