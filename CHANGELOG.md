@@ -1,5 +1,42 @@
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-18
+
+A minor rather than a patch: the fix is small, but the new refusal below can stop a
+provisioning run that used to succeed, and that deserves to be visible in the version.
+
+### Fixed
+
+- `RoleProvisioner.create_role!` accepted a password for an existing role and discarded it.
+  The whole statement was guarded on `IF NOT EXISTS`, and a role is a **cluster** object, so
+  "already exists" is the ordinary case on any server that has ever hosted the application —
+  another database on the same server, a previous deployment, a test run. A rotated
+  `APP_DB_PASSWORD` therefore did nothing, and said nothing; the failure surfaced later as
+  "password authentication failed", which points at the configuration rather than at the
+  provisioner that reported success. Reported from a consumer deployment.
+
+  The password is now rewritten when one is **declared** — passed in, or in
+  `APP_DB_PASSWORD`. It is left alone when the value fell back to the role's own name, which
+  is a development convenience: writing that over a live credential would be a strange way to
+  fail.
+
+### Added
+
+- `RoleProvisioner.create_role!` refuses an existing role that carries `SUPERUSER` or
+  `BYPASSRLS`, naming the attribute. Under such a role every policy this gem writes is
+  ignored, so provisioning it as the runtime role would report isolation that does not exist
+  — and an isolation suite run against it passes for the wrong reason.
+
+  It refuses rather than corrects, and that is not squeamishness. Verified on PostgreSQL
+  18.6: `ALTER ROLE` rejects `NOSUPERUSER` unless the caller is a superuser and `NOBYPASSRLS`
+  unless the caller has `BYPASSRLS`, and it rejects them even when the attribute is only
+  being re-asserted. A provisioner running as a `CREATEROLE` owner rather than a superuser —
+  a normal deployment — would fail on a statement with nothing to change.
+
+  **On upgrade**: if provisioning starts raising, the runtime role in that cluster is
+  privileged and the isolation there was never in force. Remove the attribute as a superuser,
+  or point `config.runtime_role` at another role.
+
 ## [0.3.0] - 2026-08-18
 
 ### Added

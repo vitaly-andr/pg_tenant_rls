@@ -557,6 +557,100 @@ RSpec.describe "tenant isolation", :database do
     end
   end
 
+  # A role is a cluster object, so every example here works on a throwaway name and drops it
+  # afterwards — the runtime role the rest of the suite depends on must not be touched.
+  describe "PgTenantRls::RoleProvisioner.create_role!" do
+    let(:role) { "tenant_rls_rotation_probe" }
+
+    # APP_DB_PASSWORD is read as a declaration, so a value in the developer's environment
+    # would decide what these examples prove.
+    around do |example|
+      previous = ENV.delete("APP_DB_PASSWORD")
+      example.run
+    ensure
+      ENV["APP_DB_PASSWORD"] = previous if previous
+      owner.execute("DROP ROLE IF EXISTS #{role}")
+    end
+
+    def connects_with?(password)
+      PG.connect(host: TestDatabase::HOST, port: TestDatabase::PORT, user: role,
+                 password: password, dbname: TestDatabase::DATABASE).close
+      true
+    rescue PG::ConnectionBad
+      false
+    end
+
+    def attributes
+      owner.select_value(
+        "SELECT rolsuper::int::text || rolbypassrls::int::text FROM pg_roles WHERE rolname = '#{role}'"
+      )
+    end
+
+    it "creates the role when it does not exist, unprivileged and able to log in" do
+      PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "first")
+
+      expect(attributes).to eq("00")
+      expect(connects_with?("first")).to be(true)
+    end
+
+    # The point of the whole method: a role is a cluster object, so "already exists" is the
+    # ordinary case, and the rotation used to be accepted and discarded in silence.
+    it "rotates the password of a role that already exists" do
+      PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "first")
+      PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "second")
+
+      expect(connects_with?("second")).to be(true)
+      expect(connects_with?("first")).to be(false)
+    end
+
+    it "takes the declaration from APP_DB_PASSWORD too" do
+      PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "first")
+      ENV["APP_DB_PASSWORD"] = "from_env"
+      PgTenantRls::RoleProvisioner.create_role!(owner, role: role)
+
+      expect(connects_with?("from_env")).to be(true)
+    end
+
+    # The fallback is the role's own name, a development convenience. Writing that over a
+    # live credential would be a strange way to fail.
+    it "leaves the password alone when none was declared" do
+      PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "first")
+      PgTenantRls::RoleProvisioner.create_role!(owner, role: role)
+
+      expect(connects_with?("first")).to be(true)
+    end
+
+    it "refuses a role that already carries BYPASSRLS, under which every policy is ignored" do
+      owner.execute("CREATE ROLE #{role} LOGIN PASSWORD 'first' BYPASSRLS")
+
+      expect { PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "second") }
+        .to raise_error(PgTenantRls::Error, /BYPASSRLS/)
+    end
+
+    it "refuses a superuser just as readily" do
+      owner.execute("CREATE ROLE #{role} LOGIN PASSWORD 'first' SUPERUSER")
+
+      expect { PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "second") }
+        .to raise_error(PgTenantRls::Error, /SUPERUSER/)
+    end
+
+    # Refusing rather than correcting is not squeamishness: verified on PostgreSQL 18.6,
+    # ALTER ROLE refuses NOSUPERUSER unless the caller is a superuser and NOBYPASSRLS unless
+    # the caller has BYPASSRLS, even when the attribute is only being re-asserted. A
+    # provisioner running as a CREATEROLE owner would fail on a statement with nothing to do.
+    it "does not attempt to correct the attributes, which it could not do everywhere" do
+      owner.execute("CREATE ROLE #{role} LOGIN PASSWORD 'first' BYPASSRLS")
+      begin
+        PgTenantRls::RoleProvisioner.create_role!(owner, role: role, password: "second")
+      rescue PgTenantRls::Error
+        nil
+      end
+
+      expect(attributes).to eq("01")
+      expect(connects_with?("first")).to be(true)
+    end
+  end
+
   describe "Inspector against the live catalog" do
     before do
       TestDatabase.reset_table!("inspected", "name text")
