@@ -366,25 +366,25 @@ RSpec.describe "tenant isolation", :database do
     end
 
     it "is verified against a manifest like any archetype the gem ships" do
-      expect(PgTenantRls::Inspector.verify!(owner, manifest: { notes: :authored })).to be(true)
+      expect(PgTenantRls::Inspector.verify!(owner, manifest: { notes: :authored }).clean?).to be(true)
     end
 
     it "names the policy when one is dropped outside the gem" do
       owner.execute("DROP POLICY notes_authored_insert ON notes")
-      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }))
+      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }).problems)
         .to include(a_string_matching(/missing policies notes_authored_insert/))
     end
 
     # The two verdicts that used to read as one line, told apart against a real catalogue.
     it "reports a policy added outside the gem as belonging to no archetype" do
       owner.execute("CREATE POLICY notes_hotfix ON notes FOR SELECT USING (true)")
-      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }))
+      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }).problems)
         .to include(a_string_matching(/no registered archetype: notes_hotfix/))
     end
 
     it "attributes a leftover of another archetype to the archetype that declares it" do
       owner.execute("CREATE POLICY notes_tenant_all ON notes FOR ALL USING (true)")
-      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }))
+      expect(PgTenantRls::Inspector.audit(owner, manifest: { notes: :authored }).problems)
         .to include(a_string_matching(/another archetype: notes_tenant_all \(tenant\)/))
     end
 
@@ -636,7 +636,7 @@ RSpec.describe "tenant isolation", :database do
       owner.execute("CREATE ROLE #{bypasser} NOLOGIN BYPASSRLS")
       owner.execute("CREATE ROLE #{app} LOGIN PASSWORD 'p' IN ROLE #{bypasser}")
 
-      expect(PgTenantRls::Inspector.audit(owner, manifest: {}, role: app))
+      expect(PgTenantRls::Inspector.audit(owner, manifest: {}, role: app).problems)
         .to include(a_string_matching(/may SET ROLE #{bypasser}, which bypasses every policy/))
     end
 
@@ -773,7 +773,7 @@ RSpec.describe "tenant isolation", :database do
     end
 
     it "passes verify! for a correctly declared manifest" do
-      expect(PgTenantRls::Inspector.verify!(owner, manifest: { inspected: :tenant })).to be(true)
+      expect(PgTenantRls::Inspector.verify!(owner, manifest: { inspected: :tenant }).clean?).to be(true)
     end
 
     it "fails verify! when the manifest declares a different archetype" do
@@ -782,8 +782,8 @@ RSpec.describe "tenant isolation", :database do
     end
 
     it "catches a table inside the perimeter that the manifest never declares" do
-      problems = PgTenantRls::Inspector.audit(owner, manifest: {}, prefixes: ["inspected"])
-      expect(problems).to include(a_string_matching(/inspected: in the perimeter but absent/))
+      report = PgTenantRls::Inspector.audit(owner, manifest: {}, prefixes: ["inspected"])
+      expect(report.problems).to include(a_string_matching(/inspected: in the perimeter but absent/))
     end
 
     it "reports foreign keys that omit the discriminator" do

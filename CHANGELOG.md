@@ -1,5 +1,40 @@
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-18
+
+### Breaking
+
+- `Inspector.audit` returns an `Inspector::Report` instead of an array of strings, and
+  `Inspector.verify!` returns that report instead of `true`. The report carries `problems`,
+  `checked` and `skipped`. Callers doing `audit(...).empty?` or iterating the result take
+  `.problems`; callers asserting `verify!(...) == true` take `.clean?`.
+
+  The type changed because the old one could not tell two different worlds apart. A bare list
+  of problems answers "was anything wrong" and cannot answer "was anything examined", so an
+  audit that had quietly stopped looking returned exactly what a clean perimeter returns —
+  and went on returning it, because the only wrong outcome of such a check is a reassuring
+  one. Three paths reached that state: an empty manifest, a missing `prefixes:` (the
+  perimeter sweep never ran), and an unset `config.runtime_role` (privileged memberships were
+  never examined).
+
+  Carrying coverage alongside findings makes the state impossible to express as success: no
+  problems over nothing examined is a different value from no problems over twenty tables, a
+  role and a perimeter.
+
+- `Inspector.verify!` raises on an audit that examined nothing, as loudly as on one that
+  found something wrong. An empty manifest with no perimeter and no role is not a passing
+  check; it is a check that did not happen.
+
+### Changed
+
+- `skipped` is reported, not raised. A perimeter sweep needs `prefixes:` and a membership
+  check needs a role; a consumer supplying neither has opted out of those two questions and
+  is entitled to. What it is not entitled to is not knowing, so the report names each
+  skipped question and why it was skipped.
+- The per-table verdicts moved to `Inspector::Verdicts`, the role questions to
+  `Inspector::Roles`. `Inspector.problems`, `Inspector.identify` and
+  `Inspector.enforced_for_current_role?` are unchanged for callers.
+
 ## [0.5.0] - 2026-08-18
 
 ### Added

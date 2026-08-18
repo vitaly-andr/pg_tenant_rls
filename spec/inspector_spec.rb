@@ -176,15 +176,44 @@ RSpec.describe PgTenantRls::Inspector do
         .to raise_error(PgTenantRls::Error, /not forced/)
     end
 
-    it "returns true when the perimeter matches" do
+    it "returns the report when the perimeter matches, saying what it looked at" do
       allow(described_class).to receive(:call).and_return([table])
-      expect(described_class.verify!(nil, manifest: { widgets: :tenant })).to be(true)
+      report = described_class.verify!(nil, manifest: { widgets: :tenant })
+
+      expect(report.clean?).to be(true)
+      expect(report.checked).to include("table widgets (tenant)")
     end
 
     it "reports a table named in the manifest but absent from the database" do
       allow(described_class).to receive(:call).and_return([])
-      expect(described_class.audit(nil, manifest: { widgets: :tenant }))
+      expect(described_class.audit(nil, manifest: { widgets: :tenant }).problems)
         .to include(a_string_matching(/table not found/))
+    end
+
+    # The defect this Report exists for: a bare list of problems answers "was anything wrong"
+    # and cannot answer "was anything examined", so an audit that had quietly stopped looking
+    # returned exactly what a clean perimeter returns.
+    it "refuses an audit that examined nothing, as loudly as one that found something" do
+      allow(described_class).to receive(:call).and_return([])
+
+      expect { described_class.verify!(nil, manifest: {}) }
+        .to raise_error(PgTenantRls::Error, /examined nothing/)
+    end
+
+    it "says which questions it did not ask, and why" do
+      allow(described_class).to receive(:call).and_return([table])
+      report = described_class.audit(nil, manifest: { widgets: :tenant })
+
+      expect(report.skipped).to include(a_string_matching(/perimeter: no prefixes given/))
+      expect(report.skipped).to include(a_string_matching(/config\.runtime_role is not set/))
+    end
+
+    it "counts the perimeter sweep as coverage even when the manifest is empty" do
+      allow(described_class).to receive(:call).and_return([])
+      report = described_class.audit(nil, manifest: {}, prefixes: ["shop_"])
+
+      expect(report.nothing_checked?).to be(false)
+      expect(report.checked).to include("perimeter shop_")
     end
   end
 
